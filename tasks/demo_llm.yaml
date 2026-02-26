@@ -1,0 +1,43 @@
+apiVersion: cron-agent/v1
+kind: CronTask
+metadata:
+  id: demo-llm-heartbeat
+  name: Demo LLM Heartbeat
+  enabled: false
+spec:
+  mode: llm
+  paused: false
+  schedule:
+    cron: "*/30 * * * *"
+    timezone: "Asia/Shanghai"
+    jitterSeconds: 0
+    maxConcurrency: 1
+    misfirePolicy: run_once
+  input:
+    prompt: "请输出一句中文状态心跳，包含今天日期。"
+    contextFiles: []
+    variables: {}
+  execution:
+    timeoutSeconds: 120
+    workingDirectory: "."
+    retry:
+      maxAttempts: 1
+      backoffSeconds: 0
+  modeConfig:
+    llm:
+      provider: kimi_openai_compat
+      model: kimi-k2.5
+      temperature: 0.2
+      maxTokens: 256
+      apiBase: https://api.moonshot.cn/v1
+      authRef: env:KIMI_API_KEY
+  output:
+    sink: file
+    pathTemplate: artifacts/{task_id}/{run_id}/result.md
+    format: markdown
+  logging:
+    eventJsonlPath: logs/runs/{date}.jsonl
+    savePrompt: true
+    saveToolCalls: true
+    saveStdout: true
+    saveStderr: true

@@ -12,6 +12,7 @@ import capture
 import analyzer
 import recorder
 import summarizer
+import cron_manager
 
 
 BASE_DIR = Path(__file__).parent
@@ -747,6 +748,7 @@ def main():
         print("  python scheduler.py cron start         - Start cron summarizer service")
         print("  python scheduler.py cron stop          - Stop cron summarizer service")
         print("  python scheduler.py cron status       - Check cron service status")
+        print("  python scheduler.py cronmgr ...       - Use cron manager CLI")
         print("  python scheduler.py cleanup           - Clean up old screenshots")
         print("  python scheduler.py test              - Test the system")
         sys.exit(1)
@@ -799,6 +801,10 @@ def main():
         else:
             print(f"Unknown cron command: {cron_cmd}")
             sys.exit(1)
+
+    elif command == "cronmgr":
+        code = cron_manager.cli_main(sys.argv[2:])
+        sys.exit(code)
 
     elif command == "cleanup":
         cleanup_temp()

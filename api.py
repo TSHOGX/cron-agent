@@ -30,12 +30,20 @@ def save_config(config):
 
 import scheduler
 import recorder
+import cron_manager
+
+
+def _public_task(task: dict) -> dict:
+    """Strip internal fields from task payload."""
+    return {k: v for k, v in task.items() if not k.startswith("_")}
 
 
 def get_status():
     """Get overall service status (both tmux and cron)."""
     tmux_status = scheduler.get_tmux_status()
     cron_status = scheduler.get_cron_status()
+    manager_status = cron_manager.get_scheduler_status()
+    backends_status = cron_manager.get_backends_status()
 
     return {
         "capture": {
@@ -49,6 +57,13 @@ def get_status():
             "installed": cron_status.get("installed", False),
             "jobs": cron_status.get("jobs", []),
             "description": cron_status.get("description", "")
+        },
+        "cron_manager": {
+            "type": "adapter",
+            "installed": manager_status.get("installed", False),
+            "jobs": manager_status.get("jobs", []),
+            "count": manager_status.get("count", 0),
+            "backends": backends_status,
         }
     }
 
@@ -380,6 +395,124 @@ def api_messages_check():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/tasks', methods=['GET'])
+def api_tasks_list():
+    """List cron manager tasks."""
+    return jsonify(cron_manager.api_list_tasks())
+
+
+@app.route('/api/tasks/<task_id>', methods=['GET'])
+def api_task_get(task_id):
+    """Get a task by id."""
+    task = cron_manager.get_task(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "task not found"}), 404
+    safe = _public_task(task)
+    safe["_valid"] = task.get("_valid", False)
+    safe["_errors"] = task.get("_errors", [])
+    return jsonify(safe)
+
+
+@app.route('/api/tasks', methods=['POST'])
+def api_task_create():
+    """Create a task from payload."""
+    try:
+        payload = request.json or {}
+        task = cron_manager.task_from_api_payload(payload)
+        saved = cron_manager.save_task(task)
+        return jsonify({"success": True, "task": _public_task(saved)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route('/api/tasks/<task_id>', methods=['PUT'])
+def api_task_update(task_id):
+    """Update task by id."""
+    try:
+        payload = request.json or {}
+        task = cron_manager.task_from_api_payload(payload, task_id=task_id)
+        saved = cron_manager.save_task(task)
+        return jsonify({"success": True, "task": _public_task(saved)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route('/api/tasks/<task_id>', methods=['DELETE'])
+def api_task_delete(task_id):
+    """Delete task by id."""
+    result = cron_manager.delete_task(task_id)
+    status = 200 if result.get("success") else 404
+    return jsonify(result), status
+
+
+@app.route('/api/tasks/<task_id>/pause', methods=['POST'])
+def api_task_pause(task_id):
+    """Pause task by id."""
+    result = cron_manager.pause_task(task_id)
+    status = 200 if result.get("success") else 404
+    return jsonify(result), status
+
+
+@app.route('/api/tasks/<task_id>/resume', methods=['POST'])
+def api_task_resume(task_id):
+    """Resume task by id."""
+    result = cron_manager.resume_task(task_id)
+    status = 200 if result.get("success") else 404
+    return jsonify(result), status
+
+
+@app.route('/api/tasks/<task_id>/run', methods=['POST'])
+def api_task_run(task_id):
+    """Run task immediately."""
+    result = cron_manager.run_task(task_id, trigger="api")
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
+@app.route('/api/tasks/<task_id>/status', methods=['GET'])
+def api_task_status(task_id):
+    """Get task runtime status."""
+    result = cron_manager.get_task_status(task_id)
+    status = 200 if result.get("found") else 404
+    return jsonify(result), status
+
+
+@app.route('/api/tasks/sync', methods=['POST'])
+def api_task_sync():
+    """Sync tasks to crontab."""
+    result = cron_manager.sync_all_tasks()
+    status = 200 if result.get("success") else 500
+    return jsonify(result), status
+
+
+@app.route('/api/backends/status', methods=['GET'])
+def api_backends_status():
+    """Get tmux/cron backend status."""
+    return jsonify(cron_manager.get_backends_status())
+
+
+@app.route('/api/backends/sync', methods=['POST'])
+def api_backends_sync():
+    """Sync all tasks to both backends."""
+    result = cron_manager.sync_all_tasks()
+    status = 200 if result.get("success") else 500
+    return jsonify(result), status
+
+
+@app.route('/api/runs', methods=['GET'])
+def api_runs():
+    """List run summaries."""
+    task_id = request.args.get("task_id")
+    limit = int(request.args.get("limit", 100))
+    return jsonify(cron_manager.list_runs(task_id=task_id, limit=limit))
+
+
+@app.route('/api/runs/<run_id>/events', methods=['GET'])
+def api_run_events(run_id):
+    """Get all events for a run."""
+    return jsonify(cron_manager.get_run_events(run_id))
 
 
 @app.route('/')

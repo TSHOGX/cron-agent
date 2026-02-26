@@ -29,3 +29,9 @@ docs/
 
 # Logs
 *.log
+
+# Cron manager runtime artifacts
+logs/
+runtime/
+artifacts/
+generated/
