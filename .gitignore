@@ -1,0 +1,31 @@
+# macOS / OS files
+.DS_Store
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / local config
+.env
+.env.*
+
+# Runtime generated data
+messages/
+records/
+journal/
+
+# Local docs (not versioned)
+docs/
+
+# Logs
+*.log

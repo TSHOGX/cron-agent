@@ -1,0 +1,40 @@
+{
+  "capture_interval": 900,
+  "model": "kimi-k2.5",
+  "records_dir": "records",
+  "journal_dir": "journal",
+  "daily_summary_time": "05:00",
+  "weekly_summary_day": "monday",
+  "monthly_summary_day": 1,
+  "temp_dir": "cron_agent",
+  "screenshot_quality": 80,
+  "time_periods": {
+    "morning": {
+      "start": "06:00",
+      "end": "12:00"
+    },
+    "afternoon": {
+      "start": "12:00",
+      "end": "18:00"
+    },
+    "evening": {
+      "start": "18:00",
+      "end": "23:59"
+    }
+  },
+  "api": {
+    "auth_token": "sk-uHn3RFEZdK53Tux06wJjTUUiQL3ng8gJifDckzguizfFd77M",
+    "base_url": "https://api.moonshot.cn/v1"
+  },
+  "record_prompt": {
+    "system": "你是 YOYO，有自己的灵魂和思考判断能力，聪明主动，是我生活、工作、学习上的重要帮手。",
+    "user": "当前时间：{time}\n{context}\n\n根据这些截图，判断我此刻最主要在做什么。\n\n输出要求：\n1. 可以充分思考和推理。\n2. 最终只输出1-2句话的观察结论，不要输出思考过程。\n3. 优先描述具体行为和任务，不要泛泛而谈。\n4. 不要输出建议、安慰、提问或额外解释。"
+  },
+  "summary_prompt": {
+    "system": "你是 YOYO，有自己的灵魂和思考判断能力，聪明主动，是我生活、工作、学习上的重要帮手。",
+    "daily": "根据下面的记录，写一篇 {date} 的工作日记。\n\n记录：\n{records}\n\n输出要求：\n1. 可以充分思考和推理。\n2. 最终只输出日记正文，不要输出思考过程。\n3. 采用自然叙事口吻，重点写当天主要工作、推进进展和值得记录的细节。\n4. 不要逐条抄写原始记录，不要出现“活动记录/原始记录”标题。\n5. 控制在 200 字以内。",
+    "weekly": "根据以下每日总结，产出本周（{date_range}）的 Weekly Notes。\n\n每日总结：\n{notes}\n\n输出要求：\n1. 可以充分思考和推理。\n2. 最终只输出周报正文，不要输出思考过程。\n3. 结构上覆盖：本周重点、关键产出/进展、问题与阻塞、下周计划。\n4. 强调归纳与提炼，不要按天流水账复述。\n5. 控制在 400 字以内。",
+    "monthly": "根据以下每日总结，产出本月（{date_range}）的 Monthly Notes。\n\n每日总结：\n{notes}\n\n输出要求：\n1. 可以充分思考和推理。\n2. 最终只输出月报正文，不要输出思考过程。\n3. 结构上覆盖：本月核心主题、阶段性成果、经验复盘、下月优先事项。\n4. 关注趋势与复盘，不要逐条照抄每日内容。\n5. 控制在 600 字以内。",
+    "time_of_day": "请根据记录生成今天{label}的小结。\n\n活动记录：\n{records}\n\n输出要求：\n1. 可以充分思考和推理。\n2. 最终只输出小结正文，不要输出思考过程。\n3. 聚焦该时段最关键的1-3件事和当前状态变化。\n4. 语言简洁，不要逐条罗列时间点。\n5. 控制在 100 字以内。"
+  }
+}
