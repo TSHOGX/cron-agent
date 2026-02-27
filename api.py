@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Flask API server for cron agent control panel."""
+"""Flask API server for cron agent."""
 
 import json
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request
 
 import cron_manager
 import recorder
@@ -13,11 +13,7 @@ import storage_paths
 
 BASE_DIR = Path(__file__).parent
 
-app = Flask(
-    __name__,
-    template_folder=str(BASE_DIR / "web" / "templates"),
-    static_folder=str(BASE_DIR / "web" / "static"),
-)
+app = Flask(__name__)
 
 
 def _public_task(task: dict) -> dict:
@@ -342,8 +338,18 @@ def api_process_kill(process_id):
 
 @app.route("/api/runs", methods=["GET"])
 def api_runs():
-    """Deprecated endpoint."""
-    return jsonify({"error": "deprecated endpoint", "message": "run event logs have been sunset; use raw trace files"}), 410
+    """List recent runs."""
+    task_id = request.args.get("task_id")
+    limit = int(request.args.get("limit", 100))
+    return jsonify(cron_manager.list_runs(task_id=task_id, limit=limit))
+
+
+@app.route("/api/runs/<run_id>", methods=["GET"])
+def api_run_get(run_id):
+    """Get run details by run_id."""
+    result = cron_manager.get_run(run_id)
+    status = 200 if result.get("found") else 404
+    return jsonify(result), status
 
 
 @app.route("/api/runs/<run_id>/events", methods=["GET"])
@@ -355,8 +361,8 @@ def api_run_events(run_id):
 
 @app.route("/")
 def index():
-    """Main dashboard page."""
-    return render_template("index.html")
+    """API root."""
+    return jsonify({"service": "cron-agent-api", "status": "ok"})
 
 
 if __name__ == "__main__":

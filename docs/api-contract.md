@@ -132,13 +132,31 @@
 - 成功状态码：`200`
 - 失败状态码：`400`
 
-## 3. Runtime Semantics
+## 3. Run Query Contract
+
+### `GET /api/runs?task_id=<id>&limit=<n>`
+
+- 成功状态码：`200`
+- 查询参数：`task_id?` `limit?`
+- 返回：run 摘要数组（聚合自 `state.json` 与 `trace_index`）。
+
+### `GET /api/runs/<run_id>`
+
+- 成功状态码：`200`
+- 不存在：`404`
+- 返回字段：
+  - `found`
+  - `run`（run 摘要）
+  - `process`（process poll 结果）
+  - `process_log_preview`（前 100 条日志）
+
+## 4. Runtime Semantics
 
 - 一次任务触发会创建一个 `run_id`，执行阶段创建一个 `process_id`（当前实现为 `1 run -> 1 process`）。
 - task 运行状态与 process 运行状态通过 `runtime/state.json` 同步。
 - 服务重启后，历史 `running/starting` process 会标记为失败（`process lost after service restart`）。
 
-## 4. Compatibility Notes
+## 5. Compatibility Notes
 
-- `GET /api/runs` 与 `GET /api/runs/<run_id>/events` 仍为 deprecated（返回 `410`）。
+- `GET /api/runs/<run_id>/events` 仍为 deprecated（返回 `410`）。
 - `runBackend=tmux` 已为 run-once 语义，不再使用 tmux 内部 while-loop 调度。

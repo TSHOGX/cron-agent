@@ -604,6 +604,35 @@ def _append_trace_index(row: dict[str, Any]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _iter_trace_index_rows(limit: int = 500) -> list[dict[str, Any]]:
+    root = storage_paths.get_data_dir("logs") / "trace_index"
+    if not root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.jsonl"), reverse=True):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in reversed(f.readlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(row)
+                        if len(rows) >= limit:
+                            return rows
+        except Exception:
+            continue
+    return rows
+
+
+def _run_sort_key(item: dict[str, Any]) -> str:
+    return str(item.get("finished_at") or item.get("started_at") or "")
+
+
 def _prepare_prompt(task: dict) -> str:
     prompt = task["spec"]["input"].get("prompt", "")
     variables = task["spec"]["input"].get("variables", {}) or {}
@@ -1113,13 +1142,99 @@ def run_task_async(task_id: str, trigger: str = "api") -> dict:
 
 
 def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
-    _ = (task_id, limit)
-    return []
+    lim = max(1, int(limit))
+    state = _load_state()
+    runs_state = state.get("runs", {}) if isinstance(state, dict) else {}
+    run_to_process = state.get("run_to_process", {}) if isinstance(state, dict) else {}
+    tasks_state = state.get("tasks", {}) if isinstance(state, dict) else {}
+    out: dict[str, dict[str, Any]] = {}
+
+    if isinstance(runs_state, dict):
+        for rid, info in runs_state.items():
+            if not isinstance(info, dict):
+                continue
+            item = {
+                "run_id": rid,
+                "task_id": info.get("task_id"),
+                "status": info.get("status"),
+                "finished_at": info.get("finished_at"),
+                "error": info.get("error"),
+                "process_id": run_to_process.get(rid) if isinstance(run_to_process, dict) else None,
+                "source": "state",
+            }
+            if not task_id or item["task_id"] == task_id:
+                out[rid] = item
+
+    for row in _iter_trace_index_rows(limit=max(500, lim * 5)):
+        rid = str(row.get("run_id") or "")
+        if not rid:
+            continue
+        tid = row.get("task_id")
+        if task_id and tid != task_id:
+            continue
+        item = out.get(rid, {"run_id": rid})
+        item.update(
+            {
+                "task_id": tid or item.get("task_id"),
+                "status": row.get("status") or item.get("status"),
+                "trigger": row.get("trigger"),
+                "started_at": row.get("started_at"),
+                "finished_at": row.get("finished_at") or item.get("finished_at"),
+                "elapsed_seconds": row.get("elapsed_seconds"),
+                "provider": row.get("provider"),
+                "trace_path": row.get("trace_path"),
+                "output_path": row.get("output_path"),
+                "error": row.get("error") if row.get("error") is not None else item.get("error"),
+                "process_id": row.get("process_id") or item.get("process_id"),
+                "source": "trace_index",
+            }
+        )
+        out[rid] = item
+
+    if isinstance(tasks_state, dict):
+        for tid, tinfo in tasks_state.items():
+            if not isinstance(tinfo, dict):
+                continue
+            rid = tinfo.get("current_run_id")
+            if not isinstance(rid, str) or not rid:
+                continue
+            if task_id and tid != task_id:
+                continue
+            item = out.get(rid, {"run_id": rid})
+            item.update(
+                {
+                    "task_id": tid,
+                    "status": "running" if tinfo.get("running") else item.get("status"),
+                    "started_at": tinfo.get("started_at") or item.get("started_at"),
+                    "process_id": tinfo.get("current_process_id") or item.get("process_id"),
+                    "source": "runtime",
+                }
+            )
+            out[rid] = item
+
+    rows = list(out.values())
+    rows.sort(key=_run_sort_key, reverse=True)
+    return rows[:lim]
 
 
-def get_run_events(run_id: str) -> list[dict]:
-    _ = run_id
-    return []
+def get_run(run_id: str) -> dict:
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        return {"found": False, "error": "run_id required"}
+
+    candidates = [r for r in list_runs(limit=1000) if r.get("run_id") == run_id]
+    if not candidates:
+        return {"found": False, "error": "run not found", "run_id": run_id}
+    run = candidates[0]
+    process_id = run.get("process_id")
+    process = process_manager.poll_process(process_id) if isinstance(process_id, str) and process_id else None
+    logs = process_manager.read_process_log(process_id, offset=0, limit=100) if isinstance(process_id, str) and process_id else None
+    return {
+        "found": True,
+        "run": run,
+        "process": process,
+        "process_log_preview": logs,
+    }
 
 
 def get_task_status(task_id: str) -> dict:

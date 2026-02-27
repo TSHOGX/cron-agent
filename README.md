@@ -5,9 +5,8 @@
 ## 当前架构
 
 - `cron_manager.py`: 任务控制平面（YAML 任务加载、校验、执行、同步、运行状态）
-- `api.py`: Flask API + Web 控制台
+- `api.py`: Flask API
 - `process_manager.py`: process 会话层（start/list/poll/log/write/submit/kill）
-- `web/`: 前端控制台（状态、任务配置、日志）
 - `recorder.py`: records/journal/messages 读写工具
 - `storage_paths.py`: 本地数据目录与历史数据迁移工具
 
@@ -25,11 +24,9 @@
 cron_agent/
 ├── api.py
 ├── cron_manager.py
+├── process_manager.py
 ├── recorder.py
 ├── storage_paths.py
-├── web/
-│   ├── templates/
-│   └── static/
 └── .cron_agent_data/
     ├── tasks/
     ├── logs/
@@ -49,7 +46,7 @@ pip install -r requirements.txt
 python3 api.py
 ```
 
-打开 `http://localhost:18001`。
+API 服务默认监听 `http://localhost:18001`。
 
 ## 常用命令
 
@@ -94,7 +91,8 @@ python3 cron_manager.py backends-status
 - `POST /api/process/write/<process_id>`
 - `POST /api/process/submit/<process_id>`
 - `POST /api/process/kill/<process_id>`
-- `GET /api/runs` (deprecated, returns 410)
+- `GET /api/runs`
+- `GET /api/runs/<run_id>`
 - `GET /api/runs/<run_id>/events` (deprecated, returns 410)
 - `GET /api/records`
 - `GET /api/records/dates`
