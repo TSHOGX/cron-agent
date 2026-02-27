@@ -86,8 +86,8 @@ python3 cron_manager.py backends-status
 - `POST /api/tasks/sync`
 - `GET /api/backends/status`
 - `POST /api/backends/sync`
-- `GET /api/runs`
-- `GET /api/runs/<run_id>/events`
+- `GET /api/runs` (deprecated, returns 410)
+- `GET /api/runs/<run_id>/events` (deprecated, returns 410)
 - `GET /api/records`
 - `GET /api/records/dates`
 - `GET /api/journal/<period>`
@@ -118,15 +118,16 @@ spec:
     workingDirectory: "."
   modeConfig:
     agent:
-      provider: codex_cli
+      provider: codex
       model: gpt-5-codex
       sandboxMode: workspace-write
+      trace:
+        enabled: true
+        maxEventBytes: 262144
   output:
     sink: file
     pathTemplate: artifacts/{task_id}/{run_id}/result.txt
     format: text
-  logging:
-    eventJsonlPath: logs/runs/{date}.jsonl
 ```
 
 ## 注意

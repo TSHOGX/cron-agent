@@ -281,16 +281,15 @@ def api_backends_sync():
 
 @app.route("/api/runs", methods=["GET"])
 def api_runs():
-    """List run summaries."""
-    task_id = request.args.get("task_id")
-    limit = int(request.args.get("limit", 100))
-    return jsonify(cron_manager.list_runs(task_id=task_id, limit=limit))
+    """Deprecated endpoint."""
+    return jsonify({"error": "deprecated endpoint", "message": "run event logs have been sunset; use raw trace files"}), 410
 
 
 @app.route("/api/runs/<run_id>/events", methods=["GET"])
 def api_run_events(run_id):
-    """Get all events for a run."""
-    return jsonify(cron_manager.get_run_events(run_id))
+    """Deprecated endpoint."""
+    _ = run_id
+    return jsonify({"error": "deprecated endpoint", "message": "run event logs have been sunset; use raw trace files"}), 410
 
 
 @app.route("/")

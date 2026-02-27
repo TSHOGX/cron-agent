@@ -222,7 +222,6 @@ async function loadTaskSettings(taskId) {
     const agent = modeConfig.agent || {};
     const llm = modeConfig.llm || {};
     const output = s.output || {};
-    const logging = s.logging || {};
 
     setInputValue("settings-mode", s.mode || "agent");
     setInputValue("settings-run-backend", s.runBackend || "cron");
@@ -237,7 +236,7 @@ async function loadTaskSettings(taskId) {
     setInputValue("settings-timeout", execution.timeoutSeconds || 600);
     setInputValue("settings-workdir", execution.workingDirectory || ".");
 
-    setInputValue("settings-agent-provider", agent.provider || "codex_cli");
+    setInputValue("settings-agent-provider", agent.provider || "codex");
     setInputValue("settings-agent-model", agent.model || "gpt-5-codex");
     setInputValue("settings-agent-sandbox", agent.sandboxMode || "workspace-write");
     setInputValue("settings-agent-system", agent.systemPrompt || "");
@@ -252,12 +251,6 @@ async function loadTaskSettings(taskId) {
     setInputValue("settings-output-sink", output.sink || "file");
     setInputValue("settings-output-format", output.format || "text");
     setInputValue("settings-output-path", output.pathTemplate || "");
-
-    setInputValue("settings-log-path", logging.eventJsonlPath || "");
-    setCheckboxValue("settings-log-prompt", logging.savePrompt);
-    setCheckboxValue("settings-log-toolcalls", logging.saveToolCalls);
-    setCheckboxValue("settings-log-stdout", logging.saveStdout);
-    setCheckboxValue("settings-log-stderr", logging.saveStderr);
 }
 
 function getNumber(id, fallback = null) {
@@ -311,13 +304,6 @@ async function saveTaskSettings() {
             sink: document.getElementById("settings-output-sink").value,
             format: document.getElementById("settings-output-format").value,
             pathTemplate: document.getElementById("settings-output-path").value,
-        },
-        logging: {
-            eventJsonlPath: document.getElementById("settings-log-path").value,
-            savePrompt: document.getElementById("settings-log-prompt").checked,
-            saveToolCalls: document.getElementById("settings-log-toolcalls").checked,
-            saveStdout: document.getElementById("settings-log-stdout").checked,
-            saveStderr: document.getElementById("settings-log-stderr").checked,
         },
     };
 

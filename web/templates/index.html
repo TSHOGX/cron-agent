@@ -131,7 +131,7 @@
                     <div class="config-section">
                         <h2>Agent 配置</h2>
                         <div class="config-grid">
-                            <div class="config-item"><label>Provider</label><input type="text" id="settings-agent-provider" placeholder="codex_cli"></div>
+                            <div class="config-item"><label>Provider</label><input type="text" id="settings-agent-provider" placeholder="codex"></div>
                             <div class="config-item"><label>Model</label><input type="text" id="settings-agent-model" placeholder="gpt-5-codex"></div>
                             <div class="config-item"><label>Sandbox</label><input type="text" id="settings-agent-sandbox" placeholder="workspace-write"></div>
                             <div class="config-item" style="grid-column: 1 / -1;"><label>System Prompt</label><textarea id="settings-agent-system" rows="5"></textarea></div>
@@ -151,16 +151,11 @@
                     </div>
 
                     <div class="config-section">
-                        <h2>输出与日志</h2>
+                        <h2>输出</h2>
                         <div class="config-grid">
                             <div class="config-item"><label>Output Sink</label><input type="text" id="settings-output-sink" placeholder="file"></div>
                             <div class="config-item"><label>Output Format</label><input type="text" id="settings-output-format" placeholder="text"></div>
                             <div class="config-item" style="grid-column: 1 / -1;"><label>Output Path Template</label><input type="text" id="settings-output-path"></div>
-                            <div class="config-item" style="grid-column: 1 / -1;"><label>Event JSONL Path</label><input type="text" id="settings-log-path"></div>
-                            <div class="config-item"><label><input type="checkbox" id="settings-log-prompt"> Save Prompt</label></div>
-                            <div class="config-item"><label><input type="checkbox" id="settings-log-toolcalls"> Save Tool Calls</label></div>
-                            <div class="config-item"><label><input type="checkbox" id="settings-log-stdout"> Save Stdout</label></div>
-                            <div class="config-item"><label><input type="checkbox" id="settings-log-stderr"> Save Stderr</label></div>
                         </div>
                     </div>
 

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Cron Manager: YAML task registry + dual-mode executors + JSONL event logs."""
+"""Cron Manager: YAML task registry + dual-mode executors + raw trace logs."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import inspect
 import json
 import os
 import re
@@ -19,6 +17,7 @@ from pathlib import Path
 from typing import Any
 import shlex
 
+from agent_adapter import run_agent
 import storage_paths
 
 try:
@@ -48,14 +47,17 @@ def _ensure_dirs() -> None:
     storage_paths.ensure_data_layout()
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     _bootstrap_tasks_once()
+    _migrate_agent_provider_values_once()
 
 
 def _state_file_path() -> Path:
     return storage_paths.get_data_dir("runtime") / "state.json"
 
 
-def _runs_dir() -> Path:
-    return storage_paths.get_data_dir("logs") / "runs"
+def _trace_index_path(date: datetime | None = None) -> Path:
+    if date is None:
+        date = datetime.now()
+    return storage_paths.get_data_dir("logs") / "trace_index" / f"{date.strftime('%Y-%m-%d')}.jsonl"
 
 
 def _bootstrap_tasks_once() -> None:
@@ -97,6 +99,57 @@ def _bootstrap_tasks_once() -> None:
     }
     with open(storage_paths.get_data_dir("runtime") / "tasks_bootstrap_report_v1.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
+    sentinel.write_text("done\n", encoding="utf-8")
+
+
+def _migrate_agent_provider_values_once() -> None:
+    """One-time migration from legacy agent providers and logging config."""
+    sentinel = storage_paths.get_data_dir("runtime") / ".agent_provider_migrated_v1"
+    if sentinel.exists():
+        return
+
+    provider_map = {
+        "codex_cli": "codex",
+        "claude_agent_sdk": "claude",
+    }
+    migrated = 0
+    report: list[dict[str, Any]] = []
+
+    for path in sorted(TASKS_DIR.glob("*.yaml")):
+        try:
+            data = _yaml_load(path)
+            if not isinstance(data, dict):
+                continue
+            spec = data.get("spec")
+            if not isinstance(spec, dict):
+                continue
+            changed = False
+
+            mode_cfg = spec.get("modeConfig")
+            if isinstance(mode_cfg, dict):
+                agent_cfg = mode_cfg.get("agent")
+                if isinstance(agent_cfg, dict):
+                    raw_provider = agent_cfg.get("provider")
+                    mapped = provider_map.get(str(raw_provider), None)
+                    if mapped:
+                        agent_cfg["provider"] = mapped
+                        changed = True
+
+            if "logging" in spec:
+                spec.pop("logging", None)
+                changed = True
+
+            if changed:
+                _yaml_dump(path, data)
+                migrated += 1
+                report.append({"task_file": str(path), "status": "migrated"})
+        except Exception as e:
+            report.append({"task_file": str(path), "status": "error", "error": str(e)})
+
+    _save_json_file(
+        storage_paths.get_data_dir("runtime") / "agent_provider_migration_v1.json",
+        {"migrated": migrated, "report": report},
+    )
     sentinel.write_text("done\n", encoding="utf-8")
 
 
@@ -201,10 +254,13 @@ def _fill_defaults(task: dict) -> dict:
 
     mode_cfg = spec.setdefault("modeConfig", {})
     agent_cfg = mode_cfg.setdefault("agent", {})
-    agent_cfg.setdefault("provider", "codex_cli")
+    agent_cfg.setdefault("provider", "codex")
     agent_cfg.setdefault("model", "gpt-5-codex")
     agent_cfg.setdefault("sandboxMode", "workspace-write")
     agent_cfg.setdefault("systemPrompt", "")
+    trace_cfg = agent_cfg.setdefault("trace", {})
+    trace_cfg.setdefault("enabled", True)
+    trace_cfg.setdefault("maxEventBytes", 262144)
 
     llm_cfg = mode_cfg.setdefault("llm", {})
     llm_cfg.setdefault("provider", "kimi_openai_compat")
@@ -218,13 +274,6 @@ def _fill_defaults(task: dict) -> dict:
     output_cfg.setdefault("sink", "file")
     output_cfg.setdefault("pathTemplate", "artifacts/{task_id}/{run_id}/result.md")
     output_cfg.setdefault("format", "markdown")
-
-    logging_cfg = spec.setdefault("logging", {})
-    logging_cfg.setdefault("eventJsonlPath", "logs/runs/{date}.jsonl")
-    logging_cfg.setdefault("savePrompt", True)
-    logging_cfg.setdefault("saveToolCalls", True)
-    logging_cfg.setdefault("saveStdout", True)
-    logging_cfg.setdefault("saveStderr", True)
 
     return task
 
@@ -284,11 +333,11 @@ def validate_task(task: dict) -> list[str]:
             if not isinstance(agent_cfg, dict):
                 errors.append("spec.modeConfig.agent must be an object when spec.mode=agent")
             else:
-                provider = agent_cfg.get("provider", "codex_cli")
-                if provider not in ("codex_cli", "claude_agent_sdk"):
-                    errors.append("spec.modeConfig.agent.provider must be codex_cli or claude_agent_sdk")
+                provider = agent_cfg.get("provider", "codex")
+                if provider not in ("claude", "codex", "gemini", "opencode", "pi"):
+                    errors.append("spec.modeConfig.agent.provider must be one of claude|codex|gemini|opencode|pi")
                 if agent_cfg.get("commandTemplate"):
-                    errors.append("spec.modeConfig.agent.commandTemplate is deprecated; mode=agent must use coding agent SDK execution")
+                    errors.append("spec.modeConfig.agent.commandTemplate is deprecated; use cliCommand/cliArgs")
 
             prompt = spec.get("input", {}).get("prompt", "")
             if isinstance(prompt, str):
@@ -568,32 +617,6 @@ def _format_template(template: str, task: dict, run_id: str) -> str:
     return template.format(task_id=task_id, run_id=run_id, date=_today_str())
 
 
-def _event_log_path(task: dict, run_id: str) -> Path:
-    template = task["spec"]["logging"]["eventJsonlPath"]
-    resolved = _format_template(template, task, run_id)
-    return storage_paths.resolve_data_path(resolved, default_base_kind="logs")
-
-
-def _event_log_files_for_scan() -> list[Path]:
-    """Resolve possible JSONL event files from task logging templates."""
-    files: set[Path] = set()
-    files.update(_runs_dir().glob("*.jsonl"))
-
-    for task in list_tasks(include_invalid=False):
-        template = task.get("spec", {}).get("logging", {}).get("eventJsonlPath")
-        if not isinstance(template, str) or not template.strip():
-            continue
-        pattern = template
-        for token in ("{date}", "{task_id}", "{run_id}"):
-            pattern = pattern.replace(token, "*")
-        p = storage_paths.resolve_data_path(pattern, default_base_kind="logs")
-        if p.is_absolute():
-            for matched in p.parent.glob(p.name):
-                files.add(matched)
-
-    return sorted([f for f in files if f.exists() and f.is_file()], reverse=True)
-
-
 def _display_path(path: Path) -> str:
     output_root = storage_paths.get_output_root()
     try:
@@ -602,18 +625,9 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
-def _write_event(task: dict, run_id: str, event: str, attempt: int = 1, **payload: Any) -> None:
-    path = _event_log_path(task, run_id)
+def _append_trace_index(row: dict[str, Any]) -> None:
+    path = _trace_index_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    row = {
-        "ts": _now_iso(),
-        "run_id": run_id,
-        "task_id": task["metadata"]["id"],
-        "event": event,
-        "mode": task["spec"]["mode"],
-        "attempt": attempt,
-    }
-    row.update(payload)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -685,170 +699,8 @@ def _execute_llm(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, s
         return False, "", {"error": str(e), "elapsed": elapsed, "timeout": timeout_seconds}
 
 
-def _filter_kwargs_by_signature(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
-    try:
-        sig = inspect.signature(callable_obj)
-    except Exception:
-        return kwargs
-    allowed = set(sig.parameters.keys())
-    return {k: v for k, v in kwargs.items() if k in allowed}
-
-
-def _extract_text_from_agent_message(message: Any, tool_calls: list[str]) -> str:
-    parts: list[str] = []
-    content = getattr(message, "content", None)
-    if isinstance(content, list):
-        for block in content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str) and text.strip():
-                parts.append(text.strip())
-            name = getattr(block, "name", None)
-            if isinstance(name, str) and name.strip():
-                tool_calls.append(name.strip())
-    elif isinstance(content, str) and content.strip():
-        parts.append(content.strip())
-
-    for field in ("result", "output", "text"):
-        value = getattr(message, field, None)
-        if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
-    return "\n".join(parts).strip()
-
-
-async def _run_agent_query(task: dict, prompt: str) -> tuple[str, dict]:
-    from claude_agent_sdk import query, ClaudeAgentOptions  # type: ignore
-
-    cfg = task["spec"]["modeConfig"].get("agent", {})
-    options_kwargs: dict[str, Any] = {
-        "allowed_tools": cfg.get("allowedTools"),
-        "permission_mode": cfg.get("permissionMode", "acceptEdits"),
-        "model": cfg.get("model"),
-        "system_prompt": cfg.get("systemPrompt", ""),
-    }
-    options_kwargs = {k: v for k, v in options_kwargs.items() if v not in (None, "", [])}
-
-    options = ClaudeAgentOptions(**_filter_kwargs_by_signature(ClaudeAgentOptions, options_kwargs))
-
-    full_prompt = prompt
-    system_prompt = cfg.get("systemPrompt")
-    if isinstance(system_prompt, str) and system_prompt.strip():
-        full_prompt = f"[System Instruction]\n{system_prompt.strip()}\n\n[Task]\n{prompt}"
-
-    query_kwargs = _filter_kwargs_by_signature(query, {"prompt": full_prompt, "options": options})
-    messages: list[str] = []
-    tool_calls: list[str] = []
-    last_message_type = ""
-    async for message in query(**query_kwargs):
-        last_message_type = message.__class__.__name__
-        text = _extract_text_from_agent_message(message, tool_calls)
-        if text:
-            messages.append(text)
-
-    final_text = "\n\n".join([m for m in messages if m]).strip()
-    return final_text, {
-        "tool_calls": tool_calls,
-        "message_count": len(messages),
-        "last_message_type": last_message_type,
-    }
-
-
-def _execute_agent_via_codex_cli(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
-    cfg = task["spec"]["modeConfig"].get("agent", {})
-    model = cfg.get("model", "gpt-5-codex")
-    sandbox_mode = cfg.get("sandboxMode", "workspace-write")
-    system_prompt = cfg.get("systemPrompt", "")
-    final_prompt = prompt if not system_prompt else f"[System Instruction]\n{system_prompt}\n\n[Task]\n{prompt}"
-    working_dir = BASE_DIR / task["spec"]["execution"].get("workingDirectory", ".")
-
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as f:
-        output_path = f.name
-    cmd = [
-        "codex",
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        str(sandbox_mode),
-        "--output-last-message",
-        output_path,
-    ]
-    if model:
-        cmd.extend(["--model", str(model)])
-    cmd.append(final_prompt)
-
-    started = time.time()
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(working_dir),
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=os.environ.copy(),
-        )
-        elapsed = time.time() - started
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        text = ""
-        try:
-            text = Path(output_path).read_text(encoding="utf-8").strip()
-        except Exception:
-            text = ""
-
-        if result.returncode != 0:
-            return False, "", {
-                "returncode": result.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "elapsed": elapsed,
-                "error": "codex cli execution failed",
-            }
-        if not text:
-            return False, "", {"stdout": stdout, "stderr": stderr, "elapsed": elapsed, "error": "empty codex response"}
-        return True, text, {"stdout": stdout, "stderr": stderr, "elapsed": elapsed}
-    except subprocess.TimeoutExpired as e:
-        elapsed = time.time() - started
-        return False, "", {
-            "error": f"agent timeout after {timeout_seconds}s",
-            "stdout": (e.stdout or ""),
-            "stderr": (e.stderr or ""),
-            "elapsed": elapsed,
-        }
-    except Exception as e:
-        elapsed = time.time() - started
-        return False, "", {"error": str(e), "elapsed": elapsed}
-    finally:
-        try:
-            os.unlink(output_path)
-        except OSError:
-            pass
-
-
-def _execute_agent(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
-    cfg = task["spec"]["modeConfig"].get("agent", {})
-    provider = cfg.get("provider", "codex_cli")
-    if provider == "codex_cli":
-        return _execute_agent_via_codex_cli(task, prompt, timeout_seconds)
-    if provider != "claude_agent_sdk":
-        return False, "", {"error": f"unsupported agent provider: {provider}"}
-
-    working_dir = BASE_DIR / task["spec"]["execution"].get("workingDirectory", ".")
-    started = time.time()
-    old_cwd = os.getcwd()
-    try:
-        os.chdir(str(working_dir))
-        text, meta = asyncio.run(asyncio.wait_for(_run_agent_query(task, prompt), timeout=float(timeout_seconds)))
-        elapsed = time.time() - started
-        if not text.strip():
-            return False, "", {"error": "empty agent response", "elapsed": elapsed, **meta}
-        return True, text, {"elapsed": elapsed, **meta}
-    except asyncio.TimeoutError:
-        elapsed = time.time() - started
-        return False, "", {"error": f"agent timeout after {timeout_seconds}s", "elapsed": elapsed}
-    except Exception as e:
-        elapsed = time.time() - started
-        return False, "", {"error": str(e), "elapsed": elapsed}
-    finally:
-        os.chdir(old_cwd)
+def _execute_agent(task: dict, run_id: str, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
+    return run_agent(task=task, run_id=run_id, prompt=prompt, timeout_seconds=timeout_seconds)
 
 
 def _write_output(task: dict, run_id: str, text: str) -> str:
@@ -986,38 +838,28 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
 
         lock_acquired = _mark_task_running(task_id, run_id)
         if not lock_acquired:
-            _write_event(task, run_id, "run.skipped.concurrent", meta={"trigger": trigger})
             return {"success": False, "error": "task already running", "run_id": run_id}
 
     prompt = _prepare_prompt(task)
-    if spec.get("logging", {}).get("savePrompt", True):
-        _write_event(task, run_id, "input.prepared", meta={"trigger": trigger, "prompt_preview": prompt[:500]})
-    _write_event(task, run_id, "run.started", meta={"trigger": trigger, "mode": spec.get("mode")})
-
     timeout_seconds = int(spec["execution"].get("timeoutSeconds", 600))
     retry_cfg = spec["execution"].get("retry", {})
     max_attempts = max(1, int(retry_cfg.get("maxAttempts", 1)))
     backoff = max(0, int(retry_cfg.get("backoffSeconds", 0)))
 
     start = time.time()
+    started_at = _now_iso()
     last_error = None
     final_text = ""
     final_meta: dict[str, Any] = {}
+    trace_path = ""
 
     try:
         for attempt in range(1, max_attempts + 1):
-            _write_event(task, run_id, "executor.started", attempt=attempt)
             if spec.get("mode") == "agent":
-                ok, text, meta = _execute_agent(task, prompt, timeout_seconds)
+                ok, text, meta = _execute_agent(task, run_id, prompt, timeout_seconds)
+                trace_path = str(meta.get("trace_path") or trace_path)
             else:
                 ok, text, meta = _execute_llm(task, prompt, timeout_seconds)
-
-            if spec.get("logging", {}).get("saveStdout", True) and meta.get("stdout"):
-                _write_event(task, run_id, "executor.stdout", attempt=attempt, stdout=str(meta.get("stdout"))[:8000])
-            if spec.get("logging", {}).get("saveStderr", True) and meta.get("stderr"):
-                _write_event(task, run_id, "executor.stderr", attempt=attempt, stderr=str(meta.get("stderr"))[:8000])
-            if spec.get("logging", {}).get("saveToolCalls", True) and meta.get("tool_calls"):
-                _write_event(task, run_id, "executor.tool_calls", attempt=attempt, tool_calls=meta.get("tool_calls"))
 
             if ok:
                 final_text = text
@@ -1025,80 +867,88 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
                 break
 
             last_error = meta.get("error") or meta.get("stderr") or "executor failed"
-            _write_event(task, run_id, "run.failed.attempt", attempt=attempt, error=last_error, meta=meta)
             if attempt < max_attempts:
-                _write_event(task, run_id, "run.retried", attempt=attempt, meta={"backoff_seconds": backoff})
                 if backoff > 0:
                     time.sleep(backoff)
     except Exception as e:
         last_error = f"unexpected error: {e}"
-        _write_event(task, run_id, "run.failed", error=last_error)
-        _write_event(task, run_id, "run.summary", status="failed", error=last_error)
+        elapsed = round(time.time() - start, 3)
+        _append_trace_index(
+            {
+                "ts": _now_iso(),
+                "run_id": run_id,
+                "task_id": task_id,
+                "provider": spec.get("modeConfig", {}).get("agent", {}).get("provider"),
+                "status": "failed",
+                "trigger": trigger,
+                "started_at": started_at,
+                "finished_at": _now_iso(),
+                "elapsed_seconds": elapsed,
+                "trace_path": trace_path,
+                "output_path": None,
+                "error": last_error,
+            }
+        )
         _mark_task_finished(task_id, "failed", run_id, error=last_error)
         return {"success": False, "run_id": run_id, "error": last_error}
 
     duration = round(time.time() - start, 3)
     if final_text:
         output_path = _write_output(task, run_id, final_text)
-        _write_event(task, run_id, "artifact.written", meta={"path": output_path})
-        _write_event(task, run_id, "run.succeeded", meta={"duration_seconds": duration, **final_meta})
-        _write_event(task, run_id, "run.summary", status="succeeded", duration_seconds=duration, output_path=output_path)
+        _append_trace_index(
+            {
+                "ts": _now_iso(),
+                "run_id": run_id,
+                "task_id": task_id,
+                "provider": spec.get("modeConfig", {}).get("agent", {}).get("provider") if spec.get("mode") == "agent" else "llm",
+                "status": "succeeded",
+                "trigger": trigger,
+                "started_at": started_at,
+                "finished_at": _now_iso(),
+                "elapsed_seconds": duration,
+                "trace_path": trace_path,
+                "output_path": output_path,
+                "error": None,
+                "meta": final_meta,
+            }
+        )
         _mark_task_finished(task_id, "succeeded", run_id)
-        return {"success": True, "run_id": run_id, "output_path": output_path}
+        return {
+            "success": True,
+            "run_id": run_id,
+            "output_path": output_path,
+            "trace_path": _display_path(Path(trace_path)) if trace_path else None,
+        }
 
-    _write_event(task, run_id, "run.failed", error=last_error, meta={"duration_seconds": duration})
-    _write_event(task, run_id, "run.summary", status="failed", duration_seconds=duration, error=last_error)
+    _append_trace_index(
+        {
+            "ts": _now_iso(),
+            "run_id": run_id,
+            "task_id": task_id,
+            "provider": spec.get("modeConfig", {}).get("agent", {}).get("provider") if spec.get("mode") == "agent" else "llm",
+            "status": "failed",
+            "trigger": trigger,
+            "started_at": started_at,
+            "finished_at": _now_iso(),
+            "elapsed_seconds": duration,
+            "trace_path": trace_path,
+            "output_path": None,
+            "error": last_error,
+            "meta": final_meta,
+        }
+    )
     _mark_task_finished(task_id, "failed", run_id, error=str(last_error))
     return {"success": False, "run_id": run_id, "error": last_error}
 
 
 def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
-    _ensure_dirs()
-    items: list[dict] = []
-    files = _event_log_files_for_scan()
-    for path in files:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if row.get("event") != "run.summary":
-                        continue
-                    if task_id and row.get("task_id") != task_id:
-                        continue
-                    items.append(row)
-                    if len(items) >= limit:
-                        return sorted(items, key=lambda x: x.get("ts", ""), reverse=True)
-        except Exception:
-            continue
-    return sorted(items, key=lambda x: x.get("ts", ""), reverse=True)
+    _ = (task_id, limit)
+    return []
 
 
 def get_run_events(run_id: str) -> list[dict]:
-    _ensure_dirs()
-    items: list[dict] = []
-    files = _event_log_files_for_scan()
-    for path in files:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if row.get("run_id") == run_id:
-                        items.append(row)
-        except Exception:
-            continue
-    return sorted(items, key=lambda x: x.get("ts", ""))
+    _ = run_id
+    return []
 
 
 def get_task_status(task_id: str) -> dict:
@@ -1164,7 +1014,6 @@ def get_task_settings(task_id: str) -> dict | None:
         "execution": spec.get("execution", {}),
         "modeConfig": spec.get("modeConfig", {}),
         "output": spec.get("output", {}),
-        "logging": spec.get("logging", {}),
     }
 
 
@@ -1178,7 +1027,7 @@ def update_task_settings(task_id: str, payload: dict) -> dict:
     task_copy = {k: v for k, v in task.items() if not k.startswith("_")}
     spec = task_copy.setdefault("spec", {})
 
-    updatable = ("mode", "runBackend", "schedule", "input", "execution", "modeConfig", "output", "logging")
+    updatable = ("mode", "runBackend", "schedule", "input", "execution", "modeConfig", "output")
     for key in updatable:
         if key not in payload:
             continue
