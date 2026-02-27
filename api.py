@@ -243,9 +243,9 @@ def api_task_resume(task_id):
 
 @app.route("/api/tasks/<task_id>/run", methods=["POST"])
 def api_task_run(task_id):
-    """Run task immediately."""
-    result = cron_manager.run_task(task_id, trigger="api")
-    status = 200 if result.get("success") else 400
+    """Start task run asynchronously."""
+    result = cron_manager.run_task_async(task_id, trigger="api")
+    status = 202 if result.get("success") else 400
     return jsonify(result), status
 
 
@@ -276,6 +276,67 @@ def api_backends_sync():
     """Sync all tasks to both backends."""
     result = cron_manager.sync_all_tasks()
     status = 200 if result.get("success") else 500
+    return jsonify(result), status
+
+
+@app.route("/api/process/start", methods=["POST"])
+def api_process_start():
+    payload = request.json or {}
+    result = cron_manager.api_process_start(payload)
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/process/list", methods=["GET"])
+def api_process_list():
+    task_id = request.args.get("task_id")
+    run_id = request.args.get("run_id")
+    status_filter = request.args.get("status")
+    limit = int(request.args.get("limit", 100))
+    rows = cron_manager.api_process_list(task_id=task_id, run_id=run_id, status=status_filter, limit=limit)
+    return jsonify(rows)
+
+
+@app.route("/api/process/poll/<process_id>", methods=["GET"])
+def api_process_poll(process_id):
+    result = cron_manager.api_process_poll(process_id)
+    status = 200 if result.get("found") else 404
+    return jsonify(result), status
+
+
+@app.route("/api/process/log/<process_id>", methods=["GET"])
+def api_process_log(process_id):
+    offset = int(request.args.get("offset", 0))
+    limit = int(request.args.get("limit", 200))
+    result = cron_manager.api_process_log(process_id, offset=offset, limit=limit)
+    status = 200 if result.get("found") else 404
+    return jsonify(result), status
+
+
+@app.route("/api/process/write/<process_id>", methods=["POST"])
+def api_process_write(process_id):
+    payload = request.json or {}
+    data = str(payload.get("data", ""))
+    result = cron_manager.api_process_write(process_id, data=data, submit=False)
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/process/submit/<process_id>", methods=["POST"])
+def api_process_submit(process_id):
+    payload = request.json or {}
+    data = str(payload.get("data", ""))
+    result = cron_manager.api_process_write(process_id, data=data, submit=True)
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/process/kill/<process_id>", methods=["POST"])
+def api_process_kill(process_id):
+    payload = request.json or {}
+    sig = str(payload.get("signal", "TERM"))
+    result = cron_manager.api_process_kill(process_id, sig=sig)
+    status = 200 if result.get("success") else 400
     return jsonify(result), status
 
 
