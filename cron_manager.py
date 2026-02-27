@@ -238,7 +238,8 @@ def _fill_defaults(task: dict) -> dict:
     schedule = spec.setdefault("schedule", {})
     schedule.setdefault("timezone", DEFAULT_TIMEZONE)
     schedule.setdefault("jitterSeconds", 0)
-    schedule.setdefault("maxConcurrency", 1)
+    # Strong single-instance mode: one active run per task at a time.
+    schedule["maxConcurrency"] = 1
     schedule.setdefault("misfirePolicy", "run_once")
 
     spec.setdefault("input", {})
@@ -940,30 +941,28 @@ def _prepare_run_context(task_id: str, run_id: str | None = None) -> tuple[dict[
 
     run_id = run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     spec = task["spec"]
-    max_concurrency = int(spec["schedule"].get("maxConcurrency", 1))
-    if max_concurrency <= 1:
-        state = _load_state()
-        info = state.setdefault("tasks", {}).setdefault(task_id, {})
-        if info.get("running", False):
-            started_at = _parse_iso(info.get("started_at"))
-            timeout_seconds = int(spec["execution"].get("timeoutSeconds", 600))
-            stale_after = max(60, timeout_seconds + 30)
-            if started_at is None:
-                _clear_stale_running_lock(task_id, "stale running lock recovered (invalid started_at)")
-            else:
-                age_seconds = (datetime.now().astimezone() - started_at).total_seconds()
-                if age_seconds > stale_after:
-                    _clear_stale_running_lock(task_id, f"stale running lock recovered (age={int(age_seconds)}s)")
-        lock_acquired = _mark_task_running(task_id, run_id)
-        if not lock_acquired:
-            return None, _run_response(
-                success=False,
-                task_id=task_id,
-                run_id=run_id,
-                status="failed",
-                error="task already running",
-                error_code="task_running",
-            )
+    state = _load_state()
+    info = state.setdefault("tasks", {}).setdefault(task_id, {})
+    if info.get("running", False):
+        started_at = _parse_iso(info.get("started_at"))
+        timeout_seconds = int(spec["execution"].get("timeoutSeconds", 600))
+        stale_after = max(60, timeout_seconds + 30)
+        if started_at is None:
+            _clear_stale_running_lock(task_id, "stale running lock recovered (invalid started_at)")
+        else:
+            age_seconds = (datetime.now().astimezone() - started_at).total_seconds()
+            if age_seconds > stale_after:
+                _clear_stale_running_lock(task_id, f"stale running lock recovered (age={int(age_seconds)}s)")
+    lock_acquired = _mark_task_running(task_id, run_id)
+    if not lock_acquired:
+        return None, _run_response(
+            success=False,
+            task_id=task_id,
+            run_id=run_id,
+            status="failed",
+            error="task already running",
+            error_code="task_running",
+        )
 
     prompt = _prepare_prompt(task)
     timeout_seconds = int(spec["execution"].get("timeoutSeconds", 600))

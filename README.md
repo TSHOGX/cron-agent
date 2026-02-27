@@ -145,3 +145,4 @@ spec:
 - `tasks/*.yaml` 与 `.cron_agent_data/tasks/*.yaml` 均已忽略，不会进入 Git。
 - 若使用明文密钥，请仅写入本地任务 YAML，不要提交到仓库。
 - `runBackend=tmux` 已改为 run-once 语义，不再通过 tmux 内部 while-loop 做周期调度。
+- 任务运行采用强单实例模式：同一 `task_id` 同时只能有一个运行实例，`spec.schedule.maxConcurrency` 会被固定为 `1`。
