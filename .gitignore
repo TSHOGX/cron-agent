@@ -27,9 +27,6 @@ messages/
 records/
 journal/
 
-# Local docs (not versioned)
-docs/
-
 # Logs
 *.log
 

@@ -86,6 +86,13 @@ python3 cron_manager.py backends-status
 - `POST /api/tasks/sync`
 - `GET /api/backends/status`
 - `POST /api/backends/sync`
+- `POST /api/process/start`
+- `GET /api/process/list`
+- `GET /api/process/poll/<process_id>`
+- `GET /api/process/log/<process_id>?offset=0&limit=200`
+- `POST /api/process/write/<process_id>`
+- `POST /api/process/submit/<process_id>`
+- `POST /api/process/kill/<process_id>`
 - `GET /api/runs` (deprecated, returns 410)
 - `GET /api/runs/<run_id>/events` (deprecated, returns 410)
 - `GET /api/records`
@@ -93,6 +100,10 @@ python3 cron_manager.py backends-status
 - `GET /api/journal/<period>`
 - `GET /api/journal/<period>/<filename>`
 - `GET /api/messages`
+
+说明：`POST /api/tasks/<task_id>/run` 现在是异步触发，成功时返回 `202` 与 `run_id`（执行结果通过 `/api/tasks/<task_id>/status` 和 `/api/process/*` 查询）。
+
+详细 API 契约与运行语义见：[API Contract](docs/api-contract.md)。
 
 ## 任务 YAML 示例
 
@@ -134,3 +145,4 @@ spec:
 
 - `tasks/*.yaml` 与 `.cron_agent_data/tasks/*.yaml` 均已忽略，不会进入 Git。
 - 若使用明文密钥，请仅写入本地任务 YAML，不要提交到仓库。
+- `runBackend=tmux` 已改为 run-once 语义，不再通过 tmux 内部 while-loop 做周期调度。
