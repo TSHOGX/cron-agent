@@ -604,14 +604,6 @@ def _append_trace_index(row: dict[str, Any]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _get_secret_from_auth_ref(auth_ref: str | None) -> str | None:
-    if not auth_ref:
-        return None
-    if auth_ref.startswith("env:"):
-        return os.getenv(auth_ref.split(":", 1)[1])
-    return auth_ref
-
-
 def _prepare_prompt(task: dict) -> str:
     prompt = task["spec"]["input"].get("prompt", "")
     variables = task["spec"]["input"].get("variables", {}) or {}

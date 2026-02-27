@@ -6,6 +6,7 @@
 
 - `cron_manager.py`: 任务控制平面（YAML 任务加载、校验、执行、同步、运行状态）
 - `api.py`: Flask API + Web 控制台
+- `process_manager.py`: process 会话层（start/list/poll/log/write/submit/kill）
 - `web/`: 前端控制台（状态、任务配置、日志）
 - `recorder.py`: records/journal/messages 读写工具
 - `storage_paths.py`: 本地数据目录与历史数据迁移工具
