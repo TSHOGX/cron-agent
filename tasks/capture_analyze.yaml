@@ -16,7 +16,7 @@ spec:
       Execute one capture-and-analyze cycle for this repository.
       Required outcome:
       1) Capture current screen(s) and analyze activities.
-      2) Append normalized activity record into records/<today>.jsonl.
+      2) Append normalized activity record into configured output_root records/<today>.jsonl.
       3) Return a short Chinese summary of what was recorded.
   execution:
     timeoutSeconds: 240

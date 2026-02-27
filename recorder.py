@@ -6,33 +6,33 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import storage_paths
+
 
 def load_config():
     """Load configuration from config.json."""
-    config_path = Path(__file__).parent / "config.json"
-    with open(config_path) as f:
-        return json.load(f)
+    return storage_paths.load_config()
 
 
 def get_records_dir() -> Path:
     """Get the records directory path."""
     config = load_config()
-    base_dir = Path(__file__).parent
-    records_dir = base_dir / config.get("records_dir", "records")
-    records_dir.mkdir(exist_ok=True)
+    storage_paths.migrate_legacy_data_once(config)
+    records_dir = storage_paths.get_data_dir("records", config)
+    records_dir.mkdir(parents=True, exist_ok=True)
     return records_dir
 
 
 def get_journal_dir() -> Path:
     """Get the journal directory path."""
     config = load_config()
-    base_dir = Path(__file__).parent
-    journal_dir = base_dir / config.get("journal_dir", "journal")
-    journal_dir.mkdir(exist_ok=True)
+    storage_paths.migrate_legacy_data_once(config)
+    journal_dir = storage_paths.get_data_dir("journal", config)
+    journal_dir.mkdir(parents=True, exist_ok=True)
 
     # Ensure subdirectories exist
     for subdir in ["daily", "weekly", "monthly", "period"]:
-        (journal_dir / subdir).mkdir(exist_ok=True)
+        (journal_dir / subdir).mkdir(parents=True, exist_ok=True)
 
     return journal_dir
 
@@ -325,9 +325,9 @@ def read_daily_notes(start_date: datetime = None, end_date: datetime = None) -> 
 def get_messages_dir() -> Path:
     """Get the messages directory path."""
     config = load_config()
-    base_dir = Path(__file__).parent
-    messages_dir = base_dir / config.get("messages_dir", "messages")
-    messages_dir.mkdir(exist_ok=True)
+    storage_paths.migrate_legacy_data_once(config)
+    messages_dir = storage_paths.get_data_dir("messages", config)
+    messages_dir.mkdir(parents=True, exist_ok=True)
     return messages_dir
 
 

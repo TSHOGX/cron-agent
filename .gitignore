@@ -20,6 +20,7 @@ env/
 .env.*
 
 # Runtime generated data
+/.cron_agent_data/
 messages/
 records/
 journal/

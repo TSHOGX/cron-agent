@@ -28,6 +28,7 @@ def save_config(config):
 
 import recorder
 import cron_manager
+import storage_paths
 
 
 def _public_task(task: dict) -> dict:
@@ -51,7 +52,8 @@ def get_records(date=None, limit=50):
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    records_dir = BASE_DIR / "records"
+    storage_paths.migrate_legacy_data_once()
+    records_dir = recorder.get_records_dir()
     record_file = records_dir / f"{date}.jsonl"
 
     records = []
@@ -72,7 +74,8 @@ def get_records(date=None, limit=50):
 
 def get_all_record_dates():
     """Get all available record dates."""
-    records_dir = BASE_DIR / "records"
+    storage_paths.migrate_legacy_data_once()
+    records_dir = recorder.get_records_dir()
     if not records_dir.exists():
         return []
 
@@ -85,16 +88,22 @@ def get_all_record_dates():
 
 def get_journal_files(period: str = "daily"):
     """Get journal files for a specific period."""
-    journal_dir = BASE_DIR / "journal" / period
+    storage_paths.migrate_legacy_data_once()
+    journal_dir = recorder.get_journal_dir() / period
     if not journal_dir.exists():
         return []
 
     files = []
+    output_root = storage_paths.get_output_root()
     for f in journal_dir.glob("*.md"):
+        try:
+            display_path = str(f.relative_to(output_root))
+        except ValueError:
+            display_path = str(f)
         files.append({
             "name": f.name,
             "date": f.stem,
-            "path": str(f.relative_to(BASE_DIR))
+            "path": display_path,
         })
 
     return sorted(files, key=lambda x: x["date"], reverse=True)
@@ -102,7 +111,8 @@ def get_journal_files(period: str = "daily"):
 
 def get_journal_content(period: str, filename: str):
     """Get content of a specific journal file."""
-    journal_dir = BASE_DIR / "journal" / period
+    storage_paths.migrate_legacy_data_once()
+    journal_dir = recorder.get_journal_dir() / period
     filepath = journal_dir / filename
 
     if not filepath.exists():

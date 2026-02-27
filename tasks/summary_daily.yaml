@@ -17,7 +17,7 @@ spec:
       Generate today's daily summary from existing records and save it into journal/daily.
       Required outcome:
       1) Use local project logic/data to generate the summary.
-      2) Ensure the target markdown artifact is updated.
+      2) Ensure the target markdown artifact is updated under configured output_root journal/daily.
       3) Return a concise Chinese summary of the generated content.
   execution:
     timeoutSeconds: 180

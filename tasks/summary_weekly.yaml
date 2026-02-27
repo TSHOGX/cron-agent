@@ -17,7 +17,7 @@ spec:
       Generate this week's summary from existing daily summaries/records and save it into journal/weekly.
       Required outcome:
       1) Use local project logic/data to generate weekly output.
-      2) Ensure weekly markdown artifact is updated.
+      2) Ensure weekly markdown artifact is updated under configured output_root journal/weekly.
       3) Return a concise Chinese summary of the generated result.
   execution:
     timeoutSeconds: 180

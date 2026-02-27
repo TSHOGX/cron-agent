@@ -93,6 +93,7 @@ python3 job_workers.py cleanup
 
 - `capture_interval`：截图循环间隔（秒，`tmux` 服务使用）
 - `model`：模型名（默认 `kimi-k2.5`）
+- `output_root`：运行数据根目录（默认 `./.cron_agent_data`）
 - `daily_summary_time`：日报触发时间（`HH:MM`）
 - `weekly_summary_day`：周报触发日（`monday`...`sunday`）
 - `monthly_summary_day`：月报触发日（1-28/31）
@@ -101,6 +102,12 @@ python3 job_workers.py cleanup
 - `api.base_url`：默认 `https://api.moonshot.cn/v1`
 - `record_prompt`：截图分析提示词
 - `summary_prompt`：各类总结提示词
+
+运行数据目录说明：
+
+- 默认所有运行时数据写入 `output_root`，包括 `logs/runtime/artifacts/records/journal/messages`
+- `records_dir/journal_dir/messages_dir` 为相对路径时，将解析为 `output_root` 下子目录
+- 首次启动会自动把仓库旧目录中的历史数据迁移到 `output_root`
 
 ### Cron Manager 任务字段（YAML）
 
@@ -191,22 +198,24 @@ cron_agent/
 ├── analyzer.py
 ├── recorder.py
 ├── summarizer.py
+├── storage_paths.py
 ├── config.json
 ├── requirements.txt
 ├── cron_manager.py
 ├── tasks/
 │   └── *.yaml
-├── records/
-├── runtime/
-├── logs/
-│   └── runs/
-├── artifacts/
-├── journal/
-│   ├── daily/
-│   ├── weekly/
-│   ├── monthly/
-│   └── period/
-├── messages/
+├── .cron_agent_data/
+│   ├── records/
+│   ├── runtime/
+│   ├── logs/
+│   │   └── runs/
+│   ├── artifacts/
+│   ├── journal/
+│   │   ├── daily/
+│   │   ├── weekly/
+│   │   ├── monthly/
+│   │   └── period/
+│   └── messages/
 ├── web/
 │   ├── templates/
 │   └── static/
@@ -216,7 +225,7 @@ cron_agent/
 
 ## 数据格式示例
 
-活动记录（`records/YYYY-MM-DD.jsonl` 每行一条 JSON）：
+活动记录（`.cron_agent_data/records/YYYY-MM-DD.jsonl` 每行一条 JSON）：
 
 说明：活动记录仅保留时间与描述，不保存截图文件路径。
 

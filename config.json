@@ -1,6 +1,7 @@
 {
   "capture_interval": 900,
   "model": "kimi-k2.5",
+  "output_root": "./.cron_agent_data",
   "records_dir": "records",
   "journal_dir": "journal",
   "daily_summary_time": "05:00",

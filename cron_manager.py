@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 import shlex
 
+import storage_paths
+
 try:
     import yaml  # type: ignore
 except Exception:
@@ -26,11 +28,6 @@ except Exception:
 
 BASE_DIR = Path(__file__).parent
 TASKS_DIR = BASE_DIR / "tasks"
-RUNTIME_DIR = BASE_DIR / "runtime"
-LOGS_DIR = BASE_DIR / "logs"
-RUNS_DIR = LOGS_DIR / "runs"
-ARTIFACTS_DIR = BASE_DIR / "artifacts"
-STATE_FILE = RUNTIME_DIR / "state.json"
 MARKER_BEGIN = "# >>> CRON_AGENT_MANAGED BEGIN >>>"
 MARKER_END = "# <<< CRON_AGENT_MANAGED END <<<"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -46,8 +43,17 @@ def _today_str() -> str:
 
 
 def _ensure_dirs() -> None:
-    for d in [TASKS_DIR, RUNTIME_DIR, LOGS_DIR, RUNS_DIR, ARTIFACTS_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    storage_paths.migrate_legacy_data_once()
+    storage_paths.ensure_data_layout()
+
+
+def _state_file_path() -> Path:
+    return storage_paths.get_data_dir("runtime") / "state.json"
+
+
+def _runs_dir() -> Path:
+    return storage_paths.get_output_root() / "logs" / "runs"
 
 
 def _yaml_load(path: Path) -> dict:
@@ -97,11 +103,11 @@ def _save_json_file(path: Path, data: Any) -> None:
 
 
 def _load_state() -> dict:
-    return _load_json_file(STATE_FILE, {"tasks": {}, "runs": {}})
+    return _load_json_file(_state_file_path(), {"tasks": {}, "runs": {}})
 
 
 def _save_state(state: dict) -> None:
-    _save_json_file(STATE_FILE, state)
+    _save_json_file(_state_file_path(), state)
 
 
 def _slug(s: str) -> str:
@@ -520,8 +526,16 @@ def _format_template(template: str, task: dict, run_id: str) -> str:
 
 def _event_log_path(task: dict, run_id: str) -> Path:
     template = task["spec"]["logging"]["eventJsonlPath"]
-    rel = _format_template(template, task, run_id)
-    return BASE_DIR / rel
+    resolved = _format_template(template, task, run_id)
+    return storage_paths.resolve_data_path(resolved, default_base_kind="logs")
+
+
+def _display_path(path: Path) -> str:
+    output_root = storage_paths.get_output_root()
+    try:
+        return str(path.relative_to(output_root))
+    except ValueError:
+        return str(path)
 
 
 def _write_event(task: dict, run_id: str, event: str, attempt: int = 1, **payload: Any) -> None:
@@ -776,11 +790,12 @@ def _execute_agent(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool,
 def _write_output(task: dict, run_id: str, text: str) -> str:
     output_cfg = task["spec"].get("output", {})
     template = output_cfg.get("pathTemplate", "artifacts/{task_id}/{run_id}/result.md")
-    path = BASE_DIR / _format_template(template, task, run_id)
+    resolved = _format_template(template, task, run_id)
+    path = storage_paths.resolve_data_path(resolved, default_base_kind="artifacts")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
-    return str(path.relative_to(BASE_DIR))
+    return _display_path(path)
 
 
 def _mark_task_running(task_id: str, run_id: str) -> bool:
@@ -976,7 +991,7 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
 def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
     _ensure_dirs()
     items: list[dict] = []
-    files = sorted(RUNS_DIR.glob("*.jsonl"), reverse=True)
+    files = sorted(_runs_dir().glob("*.jsonl"), reverse=True)
     for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -1003,7 +1018,7 @@ def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
 def get_run_events(run_id: str) -> list[dict]:
     _ensure_dirs()
     items: list[dict] = []
-    files = sorted(RUNS_DIR.glob("*.jsonl"), reverse=True)
+    files = sorted(_runs_dir().glob("*.jsonl"), reverse=True)
     for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:

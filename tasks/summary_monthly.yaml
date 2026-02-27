@@ -17,7 +17,7 @@ spec:
       Generate this month's summary from existing daily/weekly summaries and save it into journal/monthly.
       Required outcome:
       1) Use local project logic/data to generate monthly output.
-      2) Ensure monthly markdown artifact is updated.
+      2) Ensure monthly markdown artifact is updated under configured output_root journal/monthly.
       3) Return a concise Chinese summary of the generated result.
   execution:
     timeoutSeconds: 180
