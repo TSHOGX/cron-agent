@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any
 import shlex
 
-from agent_adapter import run_agent
+import process_manager
 import storage_paths
 
 try:
@@ -258,6 +259,10 @@ def _fill_defaults(task: dict) -> dict:
     agent_cfg.setdefault("model", "gpt-5-codex")
     agent_cfg.setdefault("sandboxMode", "workspace-write")
     agent_cfg.setdefault("systemPrompt", "")
+    fallback_cfg = agent_cfg.setdefault("fallback", {})
+    fallback_cfg.setdefault("enabled", False)
+    fallback_cfg.setdefault("order", ["codex", "claude", "gemini", "pi", "opencode"])
+    fallback_cfg.setdefault("onErrors", ["rate_limit", "quota", "provider_unavailable"])
     trace_cfg = agent_cfg.setdefault("trace", {})
     trace_cfg.setdefault("enabled", True)
     trace_cfg.setdefault("maxEventBytes", 262144)
@@ -320,9 +325,9 @@ def validate_task(task: dict) -> list[str]:
                 elif not _validate_cron_expr(cron_expr):
                     errors.append("spec.schedule.cron is invalid")
             elif run_backend == "tmux":
-                interval = schedule.get("intervalSeconds")
-                if not isinstance(interval, int) or interval <= 0:
-                    errors.append("spec.schedule.intervalSeconds must be positive int when runBackend=tmux")
+                # tmux backend no longer acts as a scheduler loop.
+                # Keep task valid for compatibility; schedule fields are ignored.
+                pass
 
             if schedule.get("misfirePolicy", "run_once") not in ("run_once", "skip"):
                 errors.append("spec.schedule.misfirePolicy must be run_once or skip")
@@ -538,55 +543,22 @@ def _kill_tmux_session(session_name: str) -> None:
         pass
 
 
-def _start_tmux_task(task: dict) -> dict:
-    task_id = task["metadata"]["id"]
-    session = _tmux_session_name(task_id)
-    interval = int(task["spec"]["schedule"].get("intervalSeconds", 900))
-    python_path = BASE_DIR / ".venv" / "bin" / "python"
-    python_exec = str(python_path) if python_path.exists() else sys.executable or "python3"
-    cmd = (
-        f"while true; do cd {shlex.quote(str(BASE_DIR))} && "
-        f"{shlex.quote(str(python_exec))} {shlex.quote(str(BASE_DIR / 'cron_manager.py'))} "
-        f"run-task {shlex.quote(task_id)} --trigger tmux; sleep {interval}; done"
-    )
-    _kill_tmux_session(session)
-    try:
-        result = subprocess.run(["tmux", "new-session", "-d", "-s", session, cmd], capture_output=True, text=True)
-        if result.returncode != 0:
-            return {"success": False, "session": session, "error": result.stderr.strip() or "tmux start failed"}
-        return {"success": True, "session": session}
-    except Exception as e:
-        return {"success": False, "session": session, "error": str(e)}
-
-
 def sync_tmux_tasks() -> dict:
-    tasks = list_tasks(include_invalid=False)
-    desired_tasks = [t for t in tasks if _is_task_enabled(t) and _task_backend(t) == "tmux"]
-    desired_sessions = {_tmux_session_name(t["metadata"]["id"]): t for t in desired_tasks}
-
     existing = _list_tmux_sessions()
     managed_existing = [s for s in existing if s.startswith(TMUX_SESSION_PREFIX)]
-
-    # Remove stale managed sessions.
     for session in managed_existing:
-        if session not in desired_sessions:
-            _kill_tmux_session(session)
-
-    errors: list[dict] = []
-    started = 0
-    for session, task in desired_sessions.items():
-        res = _start_tmux_task(task)
-        if res.get("success"):
-            started += 1
-        else:
-            errors.append({"task_id": task["metadata"]["id"], "error": res.get("error", "unknown error")})
+        _kill_tmux_session(session)
+    tasks = list_tasks(include_invalid=False)
+    desired_tasks = [t for t in tasks if _is_task_enabled(t) and _task_backend(t) == "tmux"]
 
     return {
-        "success": len(errors) == 0,
+        "success": True,
         "backend": "tmux",
         "task_count": len(desired_tasks),
-        "started": started,
-        "errors": errors,
+        "started": 0,
+        "cleaned_sessions": len(managed_existing),
+        "note": "tmux backend is run-once only; scheduler loop has been removed",
+        "errors": [],
     }
 
 
@@ -664,43 +636,125 @@ def _prepare_prompt(task: dict) -> str:
     return prompt
 
 
-def _execute_llm(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as e:
-        return False, "", {"error": f"openai sdk missing: {e}"}
+def _execute_via_process(task: dict, run_id: str, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
+    spec = task.get("spec", {})
+    task_id = task.get("metadata", {}).get("id", "unknown")
+    mode = spec.get("mode")
 
-    llm_cfg = task["spec"]["modeConfig"].get("llm", {})
-    api_key = _get_secret_from_auth_ref(llm_cfg.get("authRef"))
-    if not api_key:
-        return False, "", {"error": "Missing API key from spec.modeConfig.llm.authRef"}
-
-    model = llm_cfg.get("model", "kimi-k2.5")
-    client = OpenAI(api_key=api_key, base_url=llm_cfg.get("apiBase", "https://api.moonshot.cn/v1"))
-
-    started = time.time()
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=float(llm_cfg.get("temperature", 0.2)),
-            max_tokens=int(llm_cfg.get("maxTokens", 4000)),
-            stream=False,
+    def start_and_wait_agent(agent_cfg: dict) -> tuple[bool, str, dict]:
+        working_dir = Path(spec.get("execution", {}).get("workingDirectory", "."))
+        cwd = storage_paths.get_repo_root() / working_dir
+        start_res = process_manager.start_agent_process(
+            task_id=task_id,
+            run_id=run_id,
+            cfg=agent_cfg if isinstance(agent_cfg, dict) else {},
+            prompt=prompt,
+            cwd=str(cwd),
+            timeout_seconds=timeout_seconds,
         )
-        elapsed = time.time() - started
-        text = ""
-        if resp.choices and resp.choices[0].message:
-            text = resp.choices[0].message.content or ""
-        if not text.strip():
-            return False, "", {"error": "empty response", "elapsed": elapsed}
-        return True, text, {"model": model, "elapsed": elapsed}
-    except Exception as e:
-        elapsed = time.time() - started
-        return False, "", {"error": str(e), "elapsed": elapsed, "timeout": timeout_seconds}
+        if not start_res.get("success"):
+            return False, "", {"error": start_res.get("error", "failed to start process"), "process_id": None}
+        process_id = str(start_res["process_id"])
+        wait_res = process_manager.wait_process(process_id, timeout_seconds=max(timeout_seconds + 10, 30))
+        if not wait_res.get("found"):
+            return False, "", {"error": wait_res.get("error", "process not found"), "process_id": process_id}
+        if not wait_res.get("done"):
+            return False, "", {"error": "process wait timeout", "process_id": process_id}
+        process_meta = process_manager.poll_process(process_id)
+        text = process_manager.get_process_output(process_id) or ""
+        ok = process_meta.get("status") == "succeeded"
+        meta = {
+            "process_id": process_id,
+            "status": process_meta.get("status"),
+            "returncode": process_meta.get("returncode"),
+            "error": process_meta.get("error"),
+            "stdout_bytes": process_meta.get("stdout_bytes", 0),
+            "stderr_bytes": process_meta.get("stderr_bytes", 0),
+            "elapsed": process_meta.get("elapsed_seconds"),
+            "provider": agent_cfg.get("provider"),
+        }
+        return ok, text, meta
 
+    if mode != "agent":
+        llm_cfg = spec.get("modeConfig", {}).get("llm", {}) if isinstance(spec.get("modeConfig"), dict) else {}
+        start_res = process_manager.start_llm_process(
+            task_id=task_id,
+            run_id=run_id,
+            llm_cfg=llm_cfg if isinstance(llm_cfg, dict) else {},
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+        )
+        if not start_res.get("success"):
+            return False, "", {"error": start_res.get("error", "failed to start process"), "process_id": None}
+        process_id = str(start_res["process_id"])
+        wait_res = process_manager.wait_process(process_id, timeout_seconds=max(timeout_seconds + 10, 30))
+        if not wait_res.get("found"):
+            return False, "", {"error": wait_res.get("error", "process not found"), "process_id": process_id}
+        if not wait_res.get("done"):
+            return False, "", {"error": "process wait timeout", "process_id": process_id}
+        process_meta = process_manager.poll_process(process_id)
+        text = process_manager.get_process_output(process_id) or ""
+        ok = process_meta.get("status") == "succeeded"
+        meta = {
+            "process_id": process_id,
+            "status": process_meta.get("status"),
+            "returncode": process_meta.get("returncode"),
+            "error": process_meta.get("error"),
+            "stdout_bytes": process_meta.get("stdout_bytes", 0),
+            "stderr_bytes": process_meta.get("stderr_bytes", 0),
+            "elapsed": process_meta.get("elapsed_seconds"),
+        }
+        return ok, text, meta
 
-def _execute_agent(task: dict, run_id: str, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
-    return run_agent(task=task, run_id=run_id, prompt=prompt, timeout_seconds=timeout_seconds)
+    mode_cfg = spec.get("modeConfig", {})
+    agent_cfg = mode_cfg.get("agent", {}) if isinstance(mode_cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+
+    fallback_cfg = agent_cfg.get("fallback", {}) if isinstance(agent_cfg.get("fallback"), dict) else {}
+    fallback_enabled = bool(fallback_cfg.get("enabled", False))
+    base_provider = str(agent_cfg.get("provider", "codex"))
+    fallback_order = fallback_cfg.get("order", ["codex", "claude", "gemini", "pi", "opencode"])
+    on_errors = fallback_cfg.get("onErrors", ["rate_limit", "quota", "provider_unavailable"])
+    providers = [base_provider]
+    if fallback_enabled and isinstance(fallback_order, list):
+        for p in fallback_order:
+            ps = str(p).strip()
+            if ps and ps not in providers:
+                providers.append(ps)
+
+    def classify_error(err: str) -> str:
+        e = (err or "").lower()
+        if "rate limit" in e or "429" in e:
+            return "rate_limit"
+        if "usage limit" in e or "quota" in e:
+            return "quota"
+        if "overloaded" in e or "unavailable" in e or "cli not found" in e:
+            return "provider_unavailable"
+        return "other"
+
+    fallback_attempts: list[dict[str, Any]] = []
+    for idx, provider in enumerate(providers):
+        cfg_try = dict(agent_cfg)
+        cfg_try["provider"] = provider
+        ok, text, meta = start_and_wait_agent(cfg_try)
+        meta["fallback_index"] = idx
+        fallback_attempts.append({"provider": provider, "ok": ok, "process_id": meta.get("process_id"), "error": meta.get("error")})
+        if ok:
+            meta["fallback_attempts"] = fallback_attempts
+            return True, text, meta
+        if not fallback_enabled:
+            meta["fallback_attempts"] = fallback_attempts
+            return False, text, meta
+        if idx >= len(providers) - 1:
+            meta["fallback_attempts"] = fallback_attempts
+            return False, text, meta
+        error_type = classify_error(str(meta.get("error") or ""))
+        allowed = set(str(x) for x in on_errors) if isinstance(on_errors, list) else set()
+        if error_type not in allowed:
+            meta["fallback_attempts"] = fallback_attempts
+            return False, text, meta
+    return False, "", {"error": "executor failed", "process_id": None, "fallback_attempts": fallback_attempts}
 
 
 def _write_output(task: dict, run_id: str, text: str) -> str:
@@ -721,6 +775,7 @@ def _mark_task_running(task_id: str, run_id: str) -> bool:
         return False
     info["running"] = True
     info["current_run_id"] = run_id
+    info["current_process_id"] = None
     info["started_at"] = _now_iso()
     _save_state(state)
     return True
@@ -740,6 +795,7 @@ def _clear_stale_running_lock(task_id: str, stale_error: str) -> None:
     info = state.setdefault("tasks", {}).setdefault(task_id, {})
     info["running"] = False
     info["current_run_id"] = None
+    info["current_process_id"] = None
     info["last_status"] = "failed"
     info["last_error"] = stale_error
     info["last_finished_at"] = _now_iso()
@@ -751,6 +807,7 @@ def _mark_task_finished(task_id: str, status: str, run_id: str, error: str | Non
     info = state.setdefault("tasks", {}).setdefault(task_id, {})
     info["running"] = False
     info["current_run_id"] = None
+    info["current_process_id"] = None
     info["last_run_id"] = run_id
     info["last_status"] = status
     info["last_finished_at"] = _now_iso()
@@ -763,6 +820,42 @@ def _mark_task_finished(task_id: str, status: str, run_id: str, error: str | Non
         "error": error,
     }
     _save_state(state)
+
+
+def _mark_task_process(task_id: str, run_id: str, process_id: str | None) -> None:
+    state = _load_state()
+    info = state.setdefault("tasks", {}).setdefault(task_id, {})
+    if info.get("current_run_id") != run_id:
+        info["current_run_id"] = run_id
+    info["current_process_id"] = process_id
+    info["running"] = bool(process_id)
+    info["started_at"] = info.get("started_at") or _now_iso()
+    _save_state(state)
+
+
+def _run_response(
+    *,
+    success: bool,
+    task_id: str,
+    run_id: str | None = None,
+    process_id: str | None = None,
+    status: str | None = None,
+    error: str | None = None,
+    error_code: str | None = None,
+    output_path: str | None = None,
+    trace_path: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "success": success,
+        "task_id": task_id,
+        "run_id": run_id,
+        "process_id": process_id,
+        "status": status,
+        "error": error,
+        "error_code": error_code,
+        "output_path": output_path,
+        "trace_path": trace_path,
+    }
 
 
 def save_task(task: dict) -> dict:
@@ -808,20 +901,25 @@ def resume_task(task_id: str) -> dict:
     return {"success": True}
 
 
-def run_task(task_id: str, trigger: str = "manual") -> dict:
+def _prepare_run_context(task_id: str, run_id: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     _ensure_dirs()
     task = get_task(task_id)
     if not task:
-        return {"success": False, "error": f"task not found: {task_id}"}
+        return None, _run_response(success=False, task_id=task_id, status="failed", error=f"task not found: {task_id}", error_code="task_not_found")
     if not task.get("_valid"):
-        return {"success": False, "error": f"task invalid: {'; '.join(task.get('_errors', []))}"}
+        return None, _run_response(
+            success=False,
+            task_id=task_id,
+            status="failed",
+            error=f"task invalid: {'; '.join(task.get('_errors', []))}",
+            error_code="task_invalid",
+        )
     if not _is_task_enabled(task):
-        return {"success": False, "error": "task disabled or paused"}
+        return None, _run_response(success=False, task_id=task_id, status="failed", error="task disabled or paused", error_code="task_disabled")
 
-    run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    run_id = run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     spec = task["spec"]
     max_concurrency = int(spec["schedule"].get("maxConcurrency", 1))
-    lock_acquired = False
     if max_concurrency <= 1:
         state = _load_state()
         info = state.setdefault("tasks", {}).setdefault(task_id, {})
@@ -835,31 +933,62 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
                 age_seconds = (datetime.now().astimezone() - started_at).total_seconds()
                 if age_seconds > stale_after:
                     _clear_stale_running_lock(task_id, f"stale running lock recovered (age={int(age_seconds)}s)")
-
         lock_acquired = _mark_task_running(task_id, run_id)
         if not lock_acquired:
-            return {"success": False, "error": "task already running", "run_id": run_id}
+            return None, _run_response(
+                success=False,
+                task_id=task_id,
+                run_id=run_id,
+                status="failed",
+                error="task already running",
+                error_code="task_running",
+            )
 
     prompt = _prepare_prompt(task)
     timeout_seconds = int(spec["execution"].get("timeoutSeconds", 600))
     retry_cfg = spec["execution"].get("retry", {})
     max_attempts = max(1, int(retry_cfg.get("maxAttempts", 1)))
     backoff = max(0, int(retry_cfg.get("backoffSeconds", 0)))
+    ctx = {
+        "task": task,
+        "task_id": task_id,
+        "run_id": run_id,
+        "spec": spec,
+        "prompt": prompt,
+        "timeout_seconds": timeout_seconds,
+        "max_attempts": max_attempts,
+        "backoff": backoff,
+        "started_at": _now_iso(),
+        "start_time": time.time(),
+    }
+    return ctx, None
 
-    start = time.time()
-    started_at = _now_iso()
+
+def _execute_run_context(ctx: dict[str, Any], trigger: str) -> dict:
+    task = ctx["task"]
+    task_id = ctx["task_id"]
+    run_id = ctx["run_id"]
+    spec = ctx["spec"]
+    prompt = ctx["prompt"]
+    timeout_seconds = ctx["timeout_seconds"]
+    max_attempts = ctx["max_attempts"]
+    backoff = ctx["backoff"]
+    started_at = ctx["started_at"]
+    start = ctx["start_time"]
+
     last_error = None
     final_text = ""
     final_meta: dict[str, Any] = {}
     trace_path = ""
+    process_id: str | None = None
 
     try:
         for attempt in range(1, max_attempts + 1):
-            if spec.get("mode") == "agent":
-                ok, text, meta = _execute_agent(task, run_id, prompt, timeout_seconds)
-                trace_path = str(meta.get("trace_path") or trace_path)
-            else:
-                ok, text, meta = _execute_llm(task, prompt, timeout_seconds)
+            ok, text, meta = _execute_via_process(task, run_id, prompt, timeout_seconds)
+            if meta.get("process_id"):
+                process_id = str(meta.get("process_id"))
+                _mark_task_process(task_id, run_id, process_id)
+            trace_path = str(meta.get("trace_path") or trace_path)
 
             if ok:
                 final_text = text
@@ -867,9 +996,8 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
                 break
 
             last_error = meta.get("error") or meta.get("stderr") or "executor failed"
-            if attempt < max_attempts:
-                if backoff > 0:
-                    time.sleep(backoff)
+            if attempt < max_attempts and backoff > 0:
+                time.sleep(backoff)
     except Exception as e:
         last_error = f"unexpected error: {e}"
         elapsed = round(time.time() - start, 3)
@@ -884,13 +1012,22 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
                 "started_at": started_at,
                 "finished_at": _now_iso(),
                 "elapsed_seconds": elapsed,
+                "process_id": process_id,
                 "trace_path": trace_path,
                 "output_path": None,
                 "error": last_error,
             }
         )
         _mark_task_finished(task_id, "failed", run_id, error=last_error)
-        return {"success": False, "run_id": run_id, "error": last_error}
+        return _run_response(
+            success=False,
+            task_id=task_id,
+            run_id=run_id,
+            process_id=process_id,
+            status="failed",
+            error=last_error,
+            error_code="unexpected_error",
+        )
 
     duration = round(time.time() - start, 3)
     if final_text:
@@ -906,6 +1043,7 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
                 "started_at": started_at,
                 "finished_at": _now_iso(),
                 "elapsed_seconds": duration,
+                "process_id": process_id,
                 "trace_path": trace_path,
                 "output_path": output_path,
                 "error": None,
@@ -913,12 +1051,15 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
             }
         )
         _mark_task_finished(task_id, "succeeded", run_id)
-        return {
-            "success": True,
-            "run_id": run_id,
-            "output_path": output_path,
-            "trace_path": _display_path(Path(trace_path)) if trace_path else None,
-        }
+        return _run_response(
+            success=True,
+            task_id=task_id,
+            run_id=run_id,
+            process_id=process_id,
+            status="succeeded",
+            output_path=output_path,
+            trace_path=_display_path(Path(trace_path)) if trace_path else None,
+        )
 
     _append_trace_index(
         {
@@ -931,6 +1072,7 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
             "started_at": started_at,
             "finished_at": _now_iso(),
             "elapsed_seconds": duration,
+            "process_id": process_id,
             "trace_path": trace_path,
             "output_path": None,
             "error": last_error,
@@ -938,7 +1080,44 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
         }
     )
     _mark_task_finished(task_id, "failed", run_id, error=str(last_error))
-    return {"success": False, "run_id": run_id, "error": last_error}
+    return _run_response(
+        success=False,
+        task_id=task_id,
+        run_id=run_id,
+        process_id=process_id,
+        status="failed",
+        error=str(last_error),
+        error_code="execution_failed",
+        trace_path=_display_path(Path(trace_path)) if trace_path else None,
+    )
+
+
+def run_task(task_id: str, trigger: str = "manual") -> dict:
+    ctx, err = _prepare_run_context(task_id)
+    if err:
+        return err
+    return _execute_run_context(ctx, trigger)
+
+
+def run_task_async(task_id: str, trigger: str = "api") -> dict:
+    ctx, err = _prepare_run_context(task_id)
+    if err:
+        return err
+    run_id = str(ctx["run_id"])
+    t = threading.Thread(target=_execute_run_context, args=(ctx, trigger), daemon=True)
+    try:
+        t.start()
+    except Exception as e:
+        _mark_task_finished(task_id, "failed", run_id, error=f"failed to start async run thread: {e}")
+        return _run_response(
+            success=False,
+            task_id=task_id,
+            run_id=run_id,
+            status="failed",
+            error=f"failed to start async run thread: {e}",
+            error_code="async_start_failed",
+        )
+    return _run_response(success=True, task_id=task_id, run_id=run_id, status="running")
 
 
 def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
@@ -1045,6 +1224,92 @@ def update_task_settings(task_id: str, payload: dict) -> dict:
     return {"success": True, "task": _safe_task_for_api(saved), "settings": get_task_settings(task_id)}
 
 
+def api_process_start(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return {"success": False, "error": "payload must be object"}
+    task_id = str(payload.get("task_id") or "").strip()
+    if task_id:
+        requested_run_id = str(payload.get("run_id") or "").strip() or None
+        ctx, err = _prepare_run_context(task_id, run_id=requested_run_id)
+        if err:
+            return {"success": False, "error": err.get("error", "failed to prepare run"), "error_code": err.get("error_code")}
+        task = ctx["task"]
+        run_id = str(ctx["run_id"])
+        prompt = str(payload.get("prompt") or ctx["prompt"])
+        timeout_seconds = int(payload.get("timeout_seconds") or ctx["timeout_seconds"])
+        mode = str(payload.get("mode") or task.get("spec", {}).get("mode", "agent"))
+        if mode == "agent":
+            cfg = task.get("spec", {}).get("modeConfig", {}).get("agent", {}) or {}
+            working_dir = Path(task.get("spec", {}).get("execution", {}).get("workingDirectory", "."))
+            cwd = storage_paths.get_repo_root() / working_dir
+            res = process_manager.start_agent_process(
+                task_id=task_id,
+                run_id=run_id,
+                cfg=cfg if isinstance(cfg, dict) else {},
+                prompt=prompt,
+                cwd=str(cwd),
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            llm_cfg = task.get("spec", {}).get("modeConfig", {}).get("llm", {}) or {}
+            res = process_manager.start_llm_process(
+                task_id=task_id,
+                run_id=run_id,
+                llm_cfg=llm_cfg if isinstance(llm_cfg, dict) else {},
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
+        if res.get("success"):
+            _mark_task_process(task_id, run_id, str(res.get("process_id")))
+        else:
+            _mark_task_finished(task_id, "failed", run_id, error=str(res.get("error", "process start failed")))
+        return res
+
+    mode = str(payload.get("mode") or "agent")
+    run_id = str(payload.get("run_id") or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}")
+    prompt = str(payload.get("prompt") or "")
+    timeout_seconds = int(payload.get("timeout_seconds") or 600)
+    if mode == "agent":
+        cfg = payload.get("agent", {}) if isinstance(payload.get("agent"), dict) else {}
+        cwd = str(payload.get("workdir") or storage_paths.get_repo_root())
+        return process_manager.start_agent_process(
+            task_id=str(payload.get("task_id") or "adhoc"),
+            run_id=run_id,
+            cfg=cfg,
+            prompt=prompt,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+        )
+    llm_cfg = payload.get("llm", {}) if isinstance(payload.get("llm"), dict) else {}
+    return process_manager.start_llm_process(
+        task_id=str(payload.get("task_id") or "adhoc"),
+        run_id=run_id,
+        llm_cfg=llm_cfg,
+        prompt=prompt,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def api_process_list(task_id: str | None = None, run_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict]:
+    return process_manager.list_processes(task_id=task_id, run_id=run_id, status=status, limit=limit)
+
+
+def api_process_poll(process_id: str) -> dict:
+    return process_manager.poll_process(process_id)
+
+
+def api_process_log(process_id: str, offset: int = 0, limit: int = 200) -> dict:
+    return process_manager.read_process_log(process_id, offset=offset, limit=limit)
+
+
+def api_process_write(process_id: str, data: str, submit: bool = False) -> dict:
+    return process_manager.write_process(process_id, data, submit=submit)
+
+
+def api_process_kill(process_id: str, sig: str = "TERM") -> dict:
+    return process_manager.kill_process(process_id, sig=sig)
+
+
 def cli_main(argv: list[str] | None = None) -> int:
     _ensure_dirs()
     parser = argparse.ArgumentParser(description="Cron Manager")
@@ -1076,6 +1341,23 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("sync")
     sub.add_parser("backends-status")
+    pl = sub.add_parser("process-list")
+    pl.add_argument("--task-id", default=None)
+    pl.add_argument("--run-id", default=None)
+    pl.add_argument("--status", default=None)
+    pl.add_argument("--limit", type=int, default=100)
+
+    pp = sub.add_parser("process-poll")
+    pp.add_argument("process_id")
+
+    pg = sub.add_parser("process-log")
+    pg.add_argument("process_id")
+    pg.add_argument("--offset", type=int, default=0)
+    pg.add_argument("--limit", type=int, default=200)
+
+    pk = sub.add_parser("process-kill")
+    pk.add_argument("process_id")
+    pk.add_argument("--signal", default="TERM")
 
     args = parser.parse_args(argv)
 
@@ -1117,6 +1399,21 @@ def cli_main(argv: list[str] | None = None) -> int:
     if args.cmd == "backends-status":
         print(json.dumps(get_backends_status(), ensure_ascii=False, indent=2))
         return 0
+    if args.cmd == "process-list":
+        print(json.dumps(api_process_list(task_id=args.task_id, run_id=args.run_id, status=args.status, limit=args.limit), ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "process-poll":
+        result = api_process_poll(args.process_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("found") else 3
+    if args.cmd == "process-log":
+        result = api_process_log(args.process_id, offset=args.offset, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("found") else 3
+    if args.cmd == "process-kill":
+        result = api_process_kill(args.process_id, sig=args.signal)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("success") else 3
 
     parser.print_help()
     return 1
