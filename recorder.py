@@ -9,25 +9,18 @@ from typing import Optional
 import storage_paths
 
 
-def load_config():
-    """Load configuration from config.json."""
-    return storage_paths.load_config()
-
-
 def get_records_dir() -> Path:
     """Get the records directory path."""
-    config = load_config()
-    storage_paths.migrate_legacy_data_once(config)
-    records_dir = storage_paths.get_data_dir("records", config)
+    storage_paths.migrate_legacy_data_once()
+    records_dir = storage_paths.get_data_dir("records")
     records_dir.mkdir(parents=True, exist_ok=True)
     return records_dir
 
 
 def get_journal_dir() -> Path:
     """Get the journal directory path."""
-    config = load_config()
-    storage_paths.migrate_legacy_data_once(config)
-    journal_dir = storage_paths.get_data_dir("journal", config)
+    storage_paths.migrate_legacy_data_once()
+    journal_dir = storage_paths.get_data_dir("journal")
     journal_dir.mkdir(parents=True, exist_ok=True)
 
     # Ensure subdirectories exist
@@ -185,15 +178,12 @@ def get_summary_date_range(period: str, summary_time: str = "00:00",
     Returns:
         Tuple of (start_date, end_date)
     """
-    config = load_config()
-
-    # Get configuration from config if not provided
-    if summary_time == "00:00" or summary_time is None:
-        summary_time = config.get("daily_summary_time", "00:00")
+    if summary_time is None:
+        summary_time = "00:00"
     if week_day is None:
-        week_day = config.get("weekly_summary_day", "sunday")
+        week_day = "sunday"
     if month_day is None:
-        month_day = config.get("monthly_summary_day", 1)
+        month_day = 1
 
     # Parse summary time
     hour, minute = map(int, summary_time.split(":"))
@@ -324,9 +314,8 @@ def read_daily_notes(start_date: datetime = None, end_date: datetime = None) -> 
 
 def get_messages_dir() -> Path:
     """Get the messages directory path."""
-    config = load_config()
-    storage_paths.migrate_legacy_data_once(config)
-    messages_dir = storage_paths.get_data_dir("messages", config)
+    storage_paths.migrate_legacy_data_once()
+    messages_dir = storage_paths.get_data_dir("messages")
     messages_dir.mkdir(parents=True, exist_ok=True)
     return messages_dir
 

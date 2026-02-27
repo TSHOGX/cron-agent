@@ -2,33 +2,22 @@
 """Flask API server for cron agent control panel."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request, render_template
 
+import cron_manager
+import recorder
+import storage_paths
+
 BASE_DIR = Path(__file__).parent
 
-app = Flask(__name__, template_folder=str(BASE_DIR / 'web' / 'templates'), static_folder=str(BASE_DIR / 'web' / 'static'))
-
-
-def load_config():
-    """Load configuration from config.json."""
-    config_path = BASE_DIR / "config.json"
-    with open(config_path) as f:
-        return json.load(f)
-
-
-def save_config(config):
-    """Save configuration to config.json."""
-    config_path = BASE_DIR / "config.json"
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-
-
-import recorder
-import cron_manager
-import storage_paths
+app = Flask(
+    __name__,
+    template_folder=str(BASE_DIR / "web" / "templates"),
+    static_folder=str(BASE_DIR / "web" / "static"),
+)
 
 
 def _public_task(task: dict) -> dict:
@@ -36,10 +25,9 @@ def _public_task(task: dict) -> dict:
     return {k: v for k, v in task.items() if not k.startswith("_")}
 
 
-def get_status():
+def get_status() -> dict:
     """Get service status from cron manager backends."""
     backends_status = cron_manager.get_backends_status()
-
     return {
         "cron_manager": {
             "backends": backends_status,
@@ -47,7 +35,7 @@ def get_status():
     }
 
 
-def get_records(date=None, limit=50):
+def get_records(date: str | None = None, limit: int = 50) -> list[dict]:
     """Get activity records."""
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
@@ -61,32 +49,29 @@ def get_records(date=None, limit=50):
         with open(record_file, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    try:
-                        records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
 
-    # Reverse to show newest first
     records = list(reversed(records))
     return records[:limit]
 
 
-def get_all_record_dates():
+def get_all_record_dates() -> list[str]:
     """Get all available record dates."""
     storage_paths.migrate_legacy_data_once()
     records_dir = recorder.get_records_dir()
     if not records_dir.exists():
         return []
 
-    dates = []
-    for f in records_dir.glob("*.jsonl"):
-        dates.append(f.stem)
-
+    dates = [f.stem for f in records_dir.glob("*.jsonl")]
     return sorted(dates, reverse=True)
 
 
-def get_journal_files(period: str = "daily"):
+def get_journal_files(period: str = "daily") -> list[dict]:
     """Get journal files for a specific period."""
     storage_paths.migrate_legacy_data_once()
     journal_dir = recorder.get_journal_dir() / period
@@ -100,16 +85,12 @@ def get_journal_files(period: str = "daily"):
             display_path = str(f.relative_to(output_root))
         except ValueError:
             display_path = str(f)
-        files.append({
-            "name": f.name,
-            "date": f.stem,
-            "path": display_path,
-        })
+        files.append({"name": f.name, "date": f.stem, "path": display_path})
 
     return sorted(files, key=lambda x: x["date"], reverse=True)
 
 
-def get_journal_content(period: str, filename: str):
+def get_journal_content(period: str, filename: str) -> str | None:
     """Get content of a specific journal file."""
     storage_paths.migrate_legacy_data_once()
     journal_dir = recorder.get_journal_dir() / period
@@ -122,111 +103,27 @@ def get_journal_content(period: str, filename: str):
         return f.read()
 
 
-# API Routes
-@app.route('/api/status')
+@app.route("/api/status")
 def api_status():
     """Get overall service status from cron manager."""
     return jsonify(get_status())
 
 
-@app.route('/api/config')
-def api_config():
-    """Get current configuration."""
-    config = load_config()
-    # Mask API key for security
-    if "api" in config and "auth_token" in config["api"]:
-        config["api"]["auth_token"] = config["api"]["auth_token"][:8] + "****" if len(config["api"]["auth_token"]) > 8 else "****"
-    return jsonify(config)
-
-
-@app.route('/api/config', methods=['POST'])
-def api_config_update():
-    """Update configuration."""
-    try:
-        new_config = request.json
-        current_config = load_config()
-
-        # Merge updates
-        current_config.update(new_config)
-
-        # Handle nested api config
-        if "api" in new_config:
-            if "api" not in current_config:
-                current_config["api"] = {}
-            current_config["api"].update(new_config["api"])
-
-        save_config(current_config)
-        return jsonify({"success": True, "message": "Configuration saved"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
-
-
-@app.route('/api/record_prompt')
-def api_record_prompt():
-    """Get current record prompt template."""
-    config = load_config()
-    prompt = config.get("record_prompt", {
-        "system": "你是 Kimi，由 Moonshot AI 提供的人工智能助手。请先思考，然后简洁回答。",
-        "user": "根据这些截图，直接回答用户正在做什么。只回答1-2句话，越简洁越好。"
-    })
-    return jsonify(prompt)
-
-
-@app.route('/api/record_prompt', methods=['POST'])
-def api_record_prompt_update():
-    """Update record prompt template."""
-    try:
-        new_prompt = request.json
-        config = load_config()
-        config["record_prompt"] = new_prompt
-        save_config(config)
-        return jsonify({"success": True, "message": "Record prompt updated"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
-
-
-@app.route('/api/summary_prompt')
-def api_summary_prompt():
-    """Get current summary prompt template."""
-    config = load_config()
-    prompt = config.get("summary_prompt", {
-        "system": "你是 Kimi，由 Moonshot AI 提供的人工智能助手。请简洁回答。",
-        "daily": "请帮我总结今天（{date}）的工作活动记录。\n\n活动记录：\n{records}\n\n请用简洁的语言总结：\n1. 主要做了什么工作\n2. 花费时间最多的活动是什么\n3. 有哪些值得注意的内容\n\n请用中文回复，控制在200字以内。直接回答，不要思考过程。",
-        "weekly": "请帮我根据以下每日总结，汇总本周（{date_range}）的工作情况。\n\n每日总结：\n{notes}\n\n请用简洁的语言总结：\n1. 本周的主要工作方向\n2. 花费时间最多的工作内容\n3. 有哪些值得注意的内容或成果\n\n请用中文回复，控制在300字以内。直接回答，不要思考过程。",
-        "monthly": "请帮我根据以下每日总结，汇总本月（{date_range}）的工作情况。\n\n每日总结：\n{notes}\n\n请用简洁的语言总结：\n1. 本月的主要工作方向\n2. 花费时间最多的工作内容\n3. 有哪些值得注意的内容或成果\n\n请用中文回复，控制在300字以内。直接回答，不要思考过程。",
-        "time_of_day": "请简要总结今天{label}的工作内容。\n\n活动记录：\n{records}\n\n请用2-3句话总结。直接回答。"
-    })
-    return jsonify(prompt)
-
-
-@app.route('/api/summary_prompt', methods=['POST'])
-def api_summary_prompt_update():
-    """Update summary prompt template."""
-    try:
-        new_prompt = request.json
-        config = load_config()
-        config["summary_prompt"] = new_prompt
-        save_config(config)
-        return jsonify({"success": True, "message": "Summary prompt updated"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
-
-
-@app.route('/api/records')
+@app.route("/api/records")
 def api_records():
     """Get activity records."""
-    date = request.args.get('date')
-    limit = int(request.args.get('limit', 50))
+    date = request.args.get("date")
+    limit = int(request.args.get("limit", 50))
     return jsonify(get_records(date, limit))
 
 
-@app.route('/api/records/dates')
+@app.route("/api/records/dates")
 def api_record_dates():
     """Get all available record dates."""
     return jsonify(get_all_record_dates())
 
 
-@app.route('/api/journal/<period>')
+@app.route("/api/journal/<period>")
 def api_journal_files(period):
     """Get journal files for a specific period."""
     if period not in ["daily", "weekly", "monthly", "period"]:
@@ -234,7 +131,7 @@ def api_journal_files(period):
     return jsonify(get_journal_files(period))
 
 
-@app.route('/api/journal/<period>/<path:filename>')
+@app.route("/api/journal/<period>/<path:filename>")
 def api_journal_content(period, filename):
     """Get content of a specific journal file."""
     if period not in ["daily", "weekly", "monthly", "period"]:
@@ -245,31 +142,28 @@ def api_journal_content(period, filename):
     return jsonify({"content": content})
 
 
-@app.route('/api/logs')
+@app.route("/api/logs")
 def api_logs():
     """Get application logs."""
-    # This would typically read from a log file
-    # For now, return recent records as "logs"
     records = get_records(limit=100)
     return jsonify(records)
 
 
-# Messages API
-@app.route('/api/messages')
+@app.route("/api/messages")
 def api_messages():
     """Get message list."""
-    limit = int(request.args.get('limit', 100))
+    limit = int(request.args.get("limit", 100))
     messages = recorder.read_messages(limit=limit)
     return jsonify(messages)
 
 
-@app.route('/api/tasks', methods=['GET'])
+@app.route("/api/tasks", methods=["GET"])
 def api_tasks_list():
     """List cron manager tasks."""
     return jsonify(cron_manager.api_list_tasks())
 
 
-@app.route('/api/tasks/<task_id>', methods=['GET'])
+@app.route("/api/tasks/<task_id>", methods=["GET"])
 def api_task_get(task_id):
     """Get a task by id."""
     task = cron_manager.get_task(task_id)
@@ -281,7 +175,7 @@ def api_task_get(task_id):
     return jsonify(safe)
 
 
-@app.route('/api/tasks', methods=['POST'])
+@app.route("/api/tasks", methods=["POST"])
 def api_task_create():
     """Create a task from payload."""
     try:
@@ -293,7 +187,7 @@ def api_task_create():
         return jsonify({"success": False, "error": str(e)}), 400
 
 
-@app.route('/api/tasks/<task_id>', methods=['PUT'])
+@app.route("/api/tasks/<task_id>", methods=["PUT"])
 def api_task_update(task_id):
     """Update task by id."""
     try:
@@ -305,7 +199,7 @@ def api_task_update(task_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
-@app.route('/api/tasks/<task_id>', methods=['DELETE'])
+@app.route("/api/tasks/<task_id>", methods=["DELETE"])
 def api_task_delete(task_id):
     """Delete task by id."""
     result = cron_manager.delete_task(task_id)
@@ -313,7 +207,25 @@ def api_task_delete(task_id):
     return jsonify(result), status
 
 
-@app.route('/api/tasks/<task_id>/pause', methods=['POST'])
+@app.route("/api/tasks/<task_id>/settings", methods=["GET"])
+def api_task_settings_get(task_id):
+    """Get task-level settings payload."""
+    settings = cron_manager.get_task_settings(task_id)
+    if settings is None:
+        return jsonify({"success": False, "error": "task not found"}), 404
+    return jsonify({"success": True, "task_id": task_id, "settings": settings})
+
+
+@app.route("/api/tasks/<task_id>/settings", methods=["PUT"])
+def api_task_settings_put(task_id):
+    """Update task-level settings payload."""
+    payload = request.json or {}
+    result = cron_manager.update_task_settings(task_id, payload)
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/tasks/<task_id>/pause", methods=["POST"])
 def api_task_pause(task_id):
     """Pause task by id."""
     result = cron_manager.pause_task(task_id)
@@ -321,7 +233,7 @@ def api_task_pause(task_id):
     return jsonify(result), status
 
 
-@app.route('/api/tasks/<task_id>/resume', methods=['POST'])
+@app.route("/api/tasks/<task_id>/resume", methods=["POST"])
 def api_task_resume(task_id):
     """Resume task by id."""
     result = cron_manager.resume_task(task_id)
@@ -329,7 +241,7 @@ def api_task_resume(task_id):
     return jsonify(result), status
 
 
-@app.route('/api/tasks/<task_id>/run', methods=['POST'])
+@app.route("/api/tasks/<task_id>/run", methods=["POST"])
 def api_task_run(task_id):
     """Run task immediately."""
     result = cron_manager.run_task(task_id, trigger="api")
@@ -337,7 +249,7 @@ def api_task_run(task_id):
     return jsonify(result), status
 
 
-@app.route('/api/tasks/<task_id>/status', methods=['GET'])
+@app.route("/api/tasks/<task_id>/status", methods=["GET"])
 def api_task_status(task_id):
     """Get task runtime status."""
     result = cron_manager.get_task_status(task_id)
@@ -345,21 +257,21 @@ def api_task_status(task_id):
     return jsonify(result), status
 
 
-@app.route('/api/tasks/sync', methods=['POST'])
+@app.route("/api/tasks/sync", methods=["POST"])
 def api_task_sync():
-    """Sync tasks to crontab."""
+    """Sync tasks to backends."""
     result = cron_manager.sync_all_tasks()
     status = 200 if result.get("success") else 500
     return jsonify(result), status
 
 
-@app.route('/api/backends/status', methods=['GET'])
+@app.route("/api/backends/status", methods=["GET"])
 def api_backends_status():
     """Get tmux/cron backend status."""
     return jsonify(cron_manager.get_backends_status())
 
 
-@app.route('/api/backends/sync', methods=['POST'])
+@app.route("/api/backends/sync", methods=["POST"])
 def api_backends_sync():
     """Sync all tasks to both backends."""
     result = cron_manager.sync_all_tasks()
@@ -367,7 +279,7 @@ def api_backends_sync():
     return jsonify(result), status
 
 
-@app.route('/api/runs', methods=['GET'])
+@app.route("/api/runs", methods=["GET"])
 def api_runs():
     """List run summaries."""
     task_id = request.args.get("task_id")
@@ -375,17 +287,17 @@ def api_runs():
     return jsonify(cron_manager.list_runs(task_id=task_id, limit=limit))
 
 
-@app.route('/api/runs/<run_id>/events', methods=['GET'])
+@app.route("/api/runs/<run_id>/events", methods=["GET"])
 def api_run_events(run_id):
     """Get all events for a run."""
     return jsonify(cron_manager.get_run_events(run_id))
 
 
-@app.route('/')
+@app.route("/")
 def index():
     """Main dashboard page."""
-    return render_template('index.html')
+    return render_template("index.html")
 
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=18001)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=18001)

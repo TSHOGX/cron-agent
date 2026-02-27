@@ -8,12 +8,11 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
-DataKind = Literal["logs", "runtime", "artifacts", "records", "journal", "messages"]
+DataKind = Literal["logs", "runtime", "artifacts", "records", "journal", "messages", "tasks"]
 
 BASE_DIR = Path(__file__).parent
-CONFIG_PATH = BASE_DIR / "config.json"
-DEFAULT_OUTPUT_ROOT = ".cron_agent_data"
-MIGRATION_VERSION = "v1"
+DATA_ROOT = BASE_DIR / ".cron_agent_data"
+MIGRATION_VERSION = "v2"
 MIGRATION_SENTINEL_NAME = f".migration_{MIGRATION_VERSION}_done"
 MIGRATION_REPORT_NAME = f"migration_report_{MIGRATION_VERSION}.json"
 
@@ -24,65 +23,35 @@ _KIND_DEFAULTS: dict[DataKind, str] = {
     "records": "records",
     "journal": "journal",
     "messages": "messages",
+    "tasks": "tasks",
 }
-
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        return {}
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
 
 
 def get_repo_root() -> Path:
     return BASE_DIR
 
 
-def get_output_root(config: dict | None = None) -> Path:
-    cfg = config if config is not None else load_config()
-    configured = cfg.get("output_root", DEFAULT_OUTPUT_ROOT)
-    p = Path(str(configured))
-    if p.is_absolute():
-        return p
-    return BASE_DIR / p
+def get_output_root() -> Path:
+    return DATA_ROOT
 
 
-def get_data_dir(kind: DataKind, config: dict | None = None) -> Path:
-    cfg = config if config is not None else load_config()
-    output_root = get_output_root(cfg)
-
-    if kind == "records":
-        configured = cfg.get("records_dir", _KIND_DEFAULTS[kind])
-    elif kind == "journal":
-        configured = cfg.get("journal_dir", _KIND_DEFAULTS[kind])
-    elif kind == "messages":
-        configured = cfg.get("messages_dir", _KIND_DEFAULTS[kind])
-    else:
-        configured = _KIND_DEFAULTS[kind]
-
-    p = Path(str(configured))
-    if p.is_absolute():
-        return p
-    return output_root / p
+def get_data_dir(kind: DataKind) -> Path:
+    return get_output_root() / _KIND_DEFAULTS[kind]
 
 
-def resolve_data_path(path_str: str, default_base_kind: DataKind, config: dict | None = None) -> Path:
+def resolve_data_path(path_str: str, default_base_kind: DataKind) -> Path:
     p = Path(path_str)
     if p.is_absolute():
         return p
     if str(p).strip() == "":
-        return get_data_dir(default_base_kind, config=config)
-    return get_output_root(config=config) / p
+        return get_data_dir(default_base_kind)
+    return get_output_root() / p
 
 
-def ensure_data_layout(config: dict | None = None) -> None:
-    cfg = config if config is not None else load_config()
-    get_output_root(cfg).mkdir(parents=True, exist_ok=True)
+def ensure_data_layout() -> None:
+    get_output_root().mkdir(parents=True, exist_ok=True)
     for kind in _KIND_DEFAULTS:
-        get_data_dir(kind, cfg).mkdir(parents=True, exist_ok=True)
+        get_data_dir(kind).mkdir(parents=True, exist_ok=True)
 
 
 def _merge_move(src: Path, dst: Path) -> tuple[int, int]:
@@ -113,7 +82,6 @@ def _merge_move(src: Path, dst: Path) -> tuple[int, int]:
         shutil.move(str(item), str(target))
         moved += 1
 
-    # Cleanup empty dirs in source tree.
     for p in sorted(src.rglob("*"), reverse=True):
         if p.is_dir():
             try:
@@ -128,11 +96,10 @@ def _merge_move(src: Path, dst: Path) -> tuple[int, int]:
     return moved, skipped
 
 
-def migrate_legacy_data_once(config: dict | None = None) -> dict:
-    cfg = config if config is not None else load_config()
-    ensure_data_layout(cfg)
+def migrate_legacy_data_once() -> dict:
+    ensure_data_layout()
 
-    runtime_dir = get_data_dir("runtime", cfg)
+    runtime_dir = get_data_dir("runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     sentinel = runtime_dir / MIGRATION_SENTINEL_NAME
     report_path = runtime_dir / MIGRATION_REPORT_NAME
@@ -142,13 +109,14 @@ def migrate_legacy_data_once(config: dict | None = None) -> dict:
 
     summary: dict[str, object] = {
         "migrated": True,
-        "output_root": str(get_output_root(cfg)),
+        "output_root": str(get_output_root()),
         "entries": [],
     }
 
-    for kind in _KIND_DEFAULTS:
-        legacy = BASE_DIR / _KIND_DEFAULTS[kind]
-        target = get_data_dir(kind, cfg)
+    # Legacy directories from pre-v2 config-based layout.
+    for kind in ("logs", "runtime", "artifacts", "records", "journal", "messages"):
+        legacy = BASE_DIR / kind
+        target = get_data_dir(kind)  # type: ignore[arg-type]
         entry: dict[str, object] = {
             "kind": kind,
             "legacy": str(legacy),

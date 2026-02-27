@@ -8,7 +8,6 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- Sidebar -->
         <aside class="sidebar">
             <div class="logo">
                 <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
@@ -18,63 +17,23 @@
                 <span>Cron Agent</span>
             </div>
             <nav class="nav-menu">
-                <button class="nav-item active" data-view="status">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="M12 6v6l4 2"/>
-                    </svg>
-                    <span>服务状态</span>
-                </button>
-                <button class="nav-item" data-view="config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-                    </svg>
-                    <span>配置管理</span>
-                </button>
-                <button class="nav-item" data-view="prompt">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-                    </svg>
-                    <span>提示词管理</span>
-                </button>
-                <button class="nav-item" data-view="journal">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
-                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
-                    </svg>
-                    <span>日志汇总</span>
-                </button>
-                <button class="nav-item" data-view="logs">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                        <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
-                    </svg>
-                    <span>活动日志</span>
-                </button>
-                <button class="nav-item" data-view="messages">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-                    </svg>
-                    <span>消息</span>
-                </button>
+                <button class="nav-item active" data-view="status"><span>服务状态</span></button>
+                <button class="nav-item" data-view="task-settings"><span>任务配置</span></button>
+                <button class="nav-item" data-view="journal"><span>日志汇总</span></button>
+                <button class="nav-item" data-view="logs"><span>活动日志</span></button>
+                <button class="nav-item" data-view="messages"><span>消息</span></button>
             </nav>
-            <div class="sidebar-footer">
-                <div class="version">v1.0.0</div>
-            </div>
+            <div class="sidebar-footer"><div class="version">v2.0.0</div></div>
         </aside>
 
-        <!-- Main Content -->
         <main class="main-content">
-            <!-- Status View -->
             <div class="view active" id="view-status">
                 <header class="view-header">
                     <h1>服务状态</h1>
-                    <p class="subtitle">查看和管理定时截图和汇总服务</p>
+                    <p class="subtitle">查看和管理定时任务服务</p>
                 </header>
 
                 <div class="status-cards">
-                    <!-- Capture Service (Tmux) -->
                     <div class="status-card status-card-wide">
                         <div class="status-indicator" id="capture-status-indicator">
                             <div class="status-dot"></div>
@@ -86,7 +45,6 @@
                         </div>
                     </div>
 
-                    <!-- Summarizer Service (Cron) -->
                     <div class="status-card status-card-wide">
                         <div class="status-indicator" id="summarizer-status-indicator">
                             <div class="status-dot"></div>
@@ -99,12 +57,6 @@
                     </div>
 
                     <div class="status-card info">
-                        <div class="card-icon">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
-                                <polyline points="22 4 12 14.01 9 11.01"/>
-                            </svg>
-                        </div>
                         <div class="card-content">
                             <h3>今日记录</h3>
                             <p id="today-records">-</p>
@@ -114,362 +66,144 @@
 
                 <div class="action-section">
                     <h2>服务任务</h2>
-                    <div class="service-jobs" id="service-jobs">
-                        <div class="loading">加载中...</div>
-                    </div>
+                    <div class="service-jobs" id="service-jobs"><div class="loading">加载中...</div></div>
                 </div>
 
                 <div class="action-buttons">
-                    <button class="btn btn-primary" id="btn-start-capture">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="5 3 19 12 5 21 5 3"/>
-                        </svg>
-                        启动/重启截图
-                    </button>
-                    <button class="btn btn-danger" id="btn-stop-capture">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="6" y="6" width="12" height="12"/>
-                        </svg>
-                        停止截图
-                    </button>
-                    <button class="btn btn-secondary" id="btn-start-summarizer">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                        </svg>
-                        启动/重启汇总
-                    </button>
-                    <button class="btn btn-danger-outline" id="btn-stop-summarizer">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="6" y="6" width="12" height="12"/>
-                        </svg>
-                        停止汇总
-                    </button>
+                    <button class="btn btn-primary" id="btn-start-capture">启动/重启截图</button>
+                    <button class="btn btn-danger" id="btn-stop-capture">停止截图</button>
+                    <button class="btn btn-secondary" id="btn-start-summarizer">启动/重启汇总</button>
+                    <button class="btn btn-danger-outline" id="btn-stop-summarizer">停止汇总</button>
                 </div>
             </div>
 
-            <!-- Config View -->
-            <div class="view" id="view-config">
+            <div class="view" id="view-task-settings">
                 <header class="view-header">
-                    <h1>配置管理</h1>
-                    <p class="subtitle">调整 Cron Agent 的各项参数</p>
+                    <h1>任务配置</h1>
+                    <p class="subtitle">按任务编辑执行参数（无全局配置）</p>
                 </header>
 
                 <div class="config-sections">
                     <div class="config-section">
-                        <h2>
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="12" r="10"/>
-                                <polyline points="12 6 12 12 16 14"/>
-                            </svg>
-                            定时设置
-                        </h2>
+                        <h2>目标任务</h2>
                         <div class="config-grid">
                             <div class="config-item">
-                                <label>截图间隔（分钟）</label>
-                                <input type="number" id="config-capture-interval" min="1" step="1">
-                                <span class="hint">每 N 分钟执行一次截图</span>
+                                <label>Task ID</label>
+                                <select id="settings-task-id"></select>
                             </div>
                             <div class="config-item">
-                                <label>日报生成时间</label>
-                                <input type="time" id="config-daily-time">
-                                <span class="hint">汇总时间范围：前一天此时至当天此时</span>
-                            </div>
-                            <div class="config-item">
-                                <label>周报生成日期</label>
-                                <select id="config-weekly-day">
-                                    <option value="sunday">周日</option>
-                                    <option value="monday">周一</option>
-                                    <option value="tuesday">周二</option>
-                                    <option value="wednesday">周三</option>
-                                    <option value="thursday">周四</option>
-                                    <option value="friday">周五</option>
-                                    <option value="saturday">周六</option>
+                                <label>Mode</label>
+                                <select id="settings-mode">
+                                    <option value="agent">agent</option>
+                                    <option value="llm">llm</option>
                                 </select>
-                                <span class="hint">汇总过去7天的日报</span>
                             </div>
                             <div class="config-item">
-                                <label>月报生成日期</label>
-                                <input type="number" id="config-monthly-day" min="1" max="28">
-                                <span class="hint">汇总过去约30天的日报</span>
+                                <label>Run Backend</label>
+                                <select id="settings-run-backend">
+                                    <option value="tmux">tmux</option>
+                                    <option value="cron">cron</option>
+                                </select>
                             </div>
                         </div>
                     </div>
 
                     <div class="config-section">
-                        <h2>
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="12" r="5"/>
-                                <line x1="12" y1="1" x2="12" y2="3"/>
-                                <line x1="12" y1="21" x2="12" y2="23"/>
-                                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-                                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-                                <line x1="1" y1="12" x2="3" y2="12"/>
-                                <line x1="21" y1="12" x2="23" y2="12"/>
-                                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-                                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-                            </svg>
-                            时段设置
-                        </h2>
-                        <p class="hint" style="margin-bottom: 16px;">配置上午/下午/晚上的时间段，系统将在每个时段的结束时间自动生成总结</p>
-                        <div class="time-periods-grid">
-                            <div class="time-period-card">
-                                <h3>上午 (Morning)</h3>
-                                <div class="config-item">
-                                    <label>开始时间</label>
-                                    <input type="time" id="config-morning-start">
-                                </div>
-                                <div class="config-item">
-                                    <label>结束时间</label>
-                                    <input type="time" id="config-morning-end">
-                                </div>
-                            </div>
-                            <div class="time-period-card">
-                                <h3>下午 (Afternoon)</h3>
-                                <div class="config-item">
-                                    <label>开始时间</label>
-                                    <input type="time" id="config-afternoon-start">
-                                </div>
-                                <div class="config-item">
-                                    <label>结束时间</label>
-                                    <input type="time" id="config-afternoon-end">
-                                </div>
-                            </div>
-                            <div class="time-period-card">
-                                <h3>晚上 (Evening)</h3>
-                                <div class="config-item">
-                                    <label>开始时间</label>
-                                    <input type="time" id="config-evening-start">
-                                </div>
-                                <div class="config-item">
-                                    <label>结束时间</label>
-                                    <input type="time" id="config-evening-end">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="config-section">
-                        <h2>
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
-                            </svg>
-                            AI 模型设置
-                        </h2>
+                        <h2>调度配置</h2>
                         <div class="config-grid">
-                            <div class="config-item">
-                                <label>模型</label>
-                                <input type="text" id="config-model" placeholder="kimi-k2.5">
-                            </div>
-                            <div class="config-item">
-                                <label>API 密钥</label>
-                                <input type="password" id="config-api-key" placeholder="sk-...">
-                                <span class="hint">留空保持不变</span>
-                            </div>
-                            <div class="config-item">
-                                <label>截图质量</label>
-                                <input type="number" id="config-quality" min="1" max="100">
-                                <span class="hint">WebP 压缩质量 1-100</span>
-                            </div>
+                            <div class="config-item"><label>Cron</label><input type="text" id="settings-cron" placeholder="0 5 * * *"></div>
+                            <div class="config-item"><label>Interval Seconds</label><input type="number" id="settings-interval" min="1"></div>
+                            <div class="config-item"><label>Timezone</label><input type="text" id="settings-timezone" placeholder="Asia/Shanghai"></div>
+                            <div class="config-item"><label>Max Concurrency</label><input type="number" id="settings-max-concurrency" min="1"></div>
+                            <div class="config-item"><label>Misfire Policy</label><select id="settings-misfire"><option value="run_once">run_once</option><option value="skip">skip</option></select></div>
+                        </div>
+                    </div>
+
+                    <div class="config-section">
+                        <h2>输入与执行</h2>
+                        <div class="config-grid">
+                            <div class="config-item" style="grid-column: 1 / -1;"><label>Input Prompt</label><textarea id="settings-prompt" rows="7"></textarea></div>
+                            <div class="config-item"><label>Timeout Seconds</label><input type="number" id="settings-timeout" min="1"></div>
+                            <div class="config-item"><label>Working Directory</label><input type="text" id="settings-workdir" placeholder="."></div>
+                        </div>
+                    </div>
+
+                    <div class="config-section">
+                        <h2>Agent 配置</h2>
+                        <div class="config-grid">
+                            <div class="config-item"><label>Provider</label><input type="text" id="settings-agent-provider" placeholder="codex_cli"></div>
+                            <div class="config-item"><label>Model</label><input type="text" id="settings-agent-model" placeholder="gpt-5-codex"></div>
+                            <div class="config-item"><label>Sandbox</label><input type="text" id="settings-agent-sandbox" placeholder="workspace-write"></div>
+                            <div class="config-item" style="grid-column: 1 / -1;"><label>System Prompt</label><textarea id="settings-agent-system" rows="5"></textarea></div>
+                        </div>
+                    </div>
+
+                    <div class="config-section">
+                        <h2>LLM 配置</h2>
+                        <div class="config-grid">
+                            <div class="config-item"><label>Provider</label><input type="text" id="settings-llm-provider" placeholder="kimi_openai_compat"></div>
+                            <div class="config-item"><label>Model</label><input type="text" id="settings-llm-model" placeholder="kimi-k2.5"></div>
+                            <div class="config-item"><label>API Base</label><input type="text" id="settings-llm-base" placeholder="https://api.moonshot.cn/v1"></div>
+                            <div class="config-item"><label>Auth Ref (明文或 env:)</label><input type="text" id="settings-llm-auth"></div>
+                            <div class="config-item"><label>Temperature</label><input type="number" id="settings-llm-temp" step="0.1"></div>
+                            <div class="config-item"><label>Max Tokens</label><input type="number" id="settings-llm-max-tokens" min="1"></div>
+                        </div>
+                    </div>
+
+                    <div class="config-section">
+                        <h2>输出与日志</h2>
+                        <div class="config-grid">
+                            <div class="config-item"><label>Output Sink</label><input type="text" id="settings-output-sink" placeholder="file"></div>
+                            <div class="config-item"><label>Output Format</label><input type="text" id="settings-output-format" placeholder="text"></div>
+                            <div class="config-item" style="grid-column: 1 / -1;"><label>Output Path Template</label><input type="text" id="settings-output-path"></div>
+                            <div class="config-item" style="grid-column: 1 / -1;"><label>Event JSONL Path</label><input type="text" id="settings-log-path"></div>
+                            <div class="config-item"><label><input type="checkbox" id="settings-log-prompt"> Save Prompt</label></div>
+                            <div class="config-item"><label><input type="checkbox" id="settings-log-toolcalls"> Save Tool Calls</label></div>
+                            <div class="config-item"><label><input type="checkbox" id="settings-log-stdout"> Save Stdout</label></div>
+                            <div class="config-item"><label><input type="checkbox" id="settings-log-stderr"> Save Stderr</label></div>
                         </div>
                     </div>
 
                     <div class="config-actions">
-                        <button class="btn btn-primary" id="btn-save-config">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
-                                <polyline points="17 21 17 13 7 13 7 21"/>
-                                <polyline points="7 3 7 8 15 8"/>
-                            </svg>
-                            保存配置
-                        </button>
+                        <button class="btn btn-primary" id="btn-save-task-settings">保存任务配置</button>
                     </div>
                 </div>
             </div>
 
-            <!-- Prompt View -->
-            <div class="view" id="view-prompt">
-                <header class="view-header">
-                    <h1>提示词管理</h1>
-                    <p class="subtitle">自定义 AI 分析截图和生成总结时使用的提示词</p>
-                </header>
-
-                <!-- Recorder (Analyzer) Prompts -->
-                <div class="prompt-tabs">
-                    <button class="prompt-tab active" data-tab="recorder">截图分析提示词</button>
-                    <button class="prompt-tab" data-tab="summarizer">总结提示词</button>
-                </div>
-
-                <div class="prompt-tab-content active" id="tab-recorder">
-                    <div class="prompt-sections">
-                        <div class="prompt-section">
-                            <h2>System Prompt</h2>
-                            <p class="hint">AI 助手的角色设定和行为指导</p>
-                            <textarea id="prompt-system" placeholder="你是 Kimi，由 Moonshot AI 提供的人工智能助手..."></textarea>
-                        </div>
-
-                        <div class="prompt-section">
-                            <h2>User Prompt</h2>
-                            <p class="hint">可用变量: {time} 当前时间, {context} 历史记录上下文</p>
-                            <textarea id="prompt-user" placeholder="根据这些截图，直接回答用户正在做什么..."></textarea>
-                        </div>
-
-                        <div class="prompt-preview">
-                            <h3>预览</h3>
-                            <div class="preview-content">
-                                <div class="preview-item">
-                                    <span class="label">System:</span>
-                                    <span id="preview-system">-</span>
-                                </div>
-                                <div class="preview-item">
-                                    <span class="label">User:</span>
-                                    <span id="preview-user">-</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="prompt-tab-content" id="tab-summarizer">
-                    <div class="prompt-sections">
-                        <div class="prompt-section">
-                            <h2>System Prompt</h2>
-                            <p class="hint">AI 助手生成总结时的角色设定</p>
-                            <textarea id="summary-prompt-system" placeholder="你是 Kimi，由 Moonshot AI 提供的人工智能助手。请简洁回答。"></textarea>
-                        </div>
-
-                        <div class="prompt-section">
-                            <h2>日报提示词 (Daily)</h2>
-                            <p class="hint">可用变量: {date} 日期, {records} 活动记录</p>
-                            <textarea id="summary-prompt-daily" placeholder="请帮我总结今天的工作活动记录..."></textarea>
-                        </div>
-
-                        <div class="prompt-section">
-                            <h2>周报提示词 (Weekly)</h2>
-                            <p class="hint">可用变量: {date_range} 日期范围, {notes} 每日总结</p>
-                            <textarea id="summary-prompt-weekly" placeholder="请帮我根据以下每日总结，汇总本周的工作情况..."></textarea>
-                        </div>
-
-                        <div class="prompt-section">
-                            <h2>月报提示词 (Monthly)</h2>
-                            <p class="hint">可用变量: {date_range} 日期范围, {notes} 每日总结</p>
-                            <textarea id="summary-prompt-monthly" placeholder="请帮我根据以下每日总结，汇总本月的工作情况..."></textarea>
-                        </div>
-
-                        <div class="prompt-section">
-                            <h2>时段提示词 (Time of Day)</h2>
-                            <p class="hint">可用变量: {label} 时段名称(上午/下午/晚上), {records} 活动记录</p>
-                            <textarea id="summary-prompt-time-of-day" placeholder="请简要总结今天的工作内容..."></textarea>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="prompt-actions">
-                    <button class="btn btn-primary" id="btn-save-all-prompts">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
-                            <polyline points="17 21 17 13 7 13 7 21"/>
-                            <polyline points="7 3 7 8 15 8"/>
-                        </svg>
-                        保存所有提示词
-                    </button>
-                </div>
-            </div>
-
-            <!-- Journal View -->
             <div class="view" id="view-journal">
-                <header class="view-header">
-                    <h1>日志汇总</h1>
-                    <p class="subtitle">查看日报、周报、月报和时段总结</p>
-                </header>
-
+                <header class="view-header"><h1>日志汇总</h1><p class="subtitle">查看日报、周报、月报和时段总结</p></header>
+                <div class="journal-tabs">
+                    <button class="journal-tab active" data-period="daily">日报</button>
+                    <button class="journal-tab" data-period="weekly">周报</button>
+                    <button class="journal-tab" data-period="monthly">月报</button>
+                    <button class="journal-tab" data-period="period">时段</button>
+                </div>
                 <div class="journal-container">
-                    <div class="journal-tabs">
-                        <button class="journal-tab active" data-period="daily">日报</button>
-                        <button class="journal-tab" data-period="period">时段总结</button>
-                        <button class="journal-tab" data-period="weekly">周报</button>
-                        <button class="journal-tab" data-period="monthly">月报</button>
-                    </div>
-
-                    <div class="journal-content">
-                        <div class="journal-files" id="journal-files">
-                            <div class="loading">加载中...</div>
-                        </div>
-                        <div class="journal-detail" id="journal-detail">
-                            <div class="journal-detail-placeholder">
-                                <p>选择一个文件查看内容</p>
-                            </div>
-                        </div>
-                    </div>
+                    <div class="journal-files" id="journal-files"></div>
+                    <div class="journal-detail" id="journal-detail"></div>
                 </div>
             </div>
 
-            <!-- Logs View -->
             <div class="view" id="view-logs">
-                <header class="view-header">
-                    <h1>活动日志</h1>
-                    <p class="subtitle">查看历史活动记录</p>
-                </header>
-
+                <header class="view-header"><h1>活动日志</h1><p class="subtitle">查看截图分析的记录数据</p></header>
                 <div class="logs-toolbar">
-                    <div class="date-picker">
-                        <label>日期:</label>
-                        <select id="log-date">
-                            <option value="">加载中...</option>
-                        </select>
-                    </div>
-                    <button class="btn btn-secondary" id="btn-refresh-logs">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                        </svg>
-                        刷新
-                    </button>
+                    <select id="log-date"></select>
+                    <button class="btn btn-secondary" id="btn-refresh-logs">刷新</button>
                 </div>
-
-                <div class="logs-container">
-                    <div class="logs-list" id="logs-list">
-                        <div class="loading">加载日志...</div>
-                    </div>
-                </div>
+                <div class="logs-list" id="logs-list"></div>
             </div>
 
-            <!-- Messages View -->
             <div class="view" id="view-messages">
-                <header class="view-header">
-                    <h1>消息</h1>
-                    <p class="subtitle">查看补发报告和系统通知</p>
-                </header>
-
+                <header class="view-header"><h1>消息</h1><p class="subtitle">查看消息通知记录</p></header>
                 <div class="messages-toolbar">
-                    <button class="btn btn-secondary" id="btn-check-messages" disabled>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                        </svg>
-                        已日落
-                    </button>
-                    <button class="btn btn-secondary" id="btn-refresh-messages">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                        </svg>
-                        刷新
-                    </button>
+                    <button class="btn btn-secondary" id="btn-refresh-messages">刷新</button>
                 </div>
-
-                <div class="messages-container">
-                    <div class="messages-list" id="messages-list">
-                        <div class="loading">加载消息...</div>
-                    </div>
-                </div>
+                <div class="messages-list" id="messages-list"></div>
             </div>
         </main>
     </div>
 
-    <!-- Toast Notification -->
-    <div class="toast" id="toast"></div>
-
+    <div id="toast" class="toast"></div>
     <script src="/static/app.js"></script>
 </body>
 </html>

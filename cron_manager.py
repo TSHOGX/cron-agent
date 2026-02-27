@@ -27,7 +27,8 @@ except Exception:
     yaml = None
 
 BASE_DIR = Path(__file__).parent
-TASKS_DIR = BASE_DIR / "tasks"
+TASKS_DIR = storage_paths.get_data_dir("tasks")
+TASK_TEMPLATES_DIR = BASE_DIR / "docs" / "task_templates"
 MARKER_BEGIN = "# >>> CRON_AGENT_MANAGED BEGIN >>>"
 MARKER_END = "# <<< CRON_AGENT_MANAGED END <<<"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -43,9 +44,10 @@ def _today_str() -> str:
 
 
 def _ensure_dirs() -> None:
-    TASKS_DIR.mkdir(parents=True, exist_ok=True)
     storage_paths.migrate_legacy_data_once()
     storage_paths.ensure_data_layout()
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    _bootstrap_tasks_once()
 
 
 def _state_file_path() -> Path:
@@ -53,7 +55,49 @@ def _state_file_path() -> Path:
 
 
 def _runs_dir() -> Path:
-    return storage_paths.get_output_root() / "logs" / "runs"
+    return storage_paths.get_data_dir("logs") / "runs"
+
+
+def _bootstrap_tasks_once() -> None:
+    """Populate local task directory from repo tasks/templates when empty."""
+    sentinel = storage_paths.get_data_dir("runtime") / ".tasks_bootstrapped_v1"
+    if sentinel.exists():
+        return
+
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
+    if any(TASKS_DIR.glob("*.yaml")):
+        sentinel.write_text("done\n", encoding="utf-8")
+        return
+
+    copied = 0
+    # Legacy in-repo task definitions.
+    legacy_dir = BASE_DIR / "tasks"
+    if legacy_dir.exists():
+        for src in sorted(legacy_dir.glob("*.yaml")):
+            dst = TASKS_DIR / src.name
+            if dst.exists():
+                continue
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            copied += 1
+
+    # Tracked templates for clean installs.
+    if copied == 0 and TASK_TEMPLATES_DIR.exists():
+        for src in sorted(TASK_TEMPLATES_DIR.glob("*.yaml")):
+            dst = TASKS_DIR / src.name
+            if dst.exists():
+                continue
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            copied += 1
+
+    report = {
+        "copied": copied,
+        "task_dir": str(TASKS_DIR),
+        "legacy_source": str(legacy_dir),
+        "template_source": str(TASK_TEMPLATES_DIR),
+    }
+    with open(storage_paths.get_data_dir("runtime") / "tasks_bootstrap_report_v1.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    sentinel.write_text("done\n", encoding="utf-8")
 
 
 def _yaml_load(path: Path) -> dict:
@@ -530,6 +574,26 @@ def _event_log_path(task: dict, run_id: str) -> Path:
     return storage_paths.resolve_data_path(resolved, default_base_kind="logs")
 
 
+def _event_log_files_for_scan() -> list[Path]:
+    """Resolve possible JSONL event files from task logging templates."""
+    files: set[Path] = set()
+    files.update(_runs_dir().glob("*.jsonl"))
+
+    for task in list_tasks(include_invalid=False):
+        template = task.get("spec", {}).get("logging", {}).get("eventJsonlPath")
+        if not isinstance(template, str) or not template.strip():
+            continue
+        pattern = template
+        for token in ("{date}", "{task_id}", "{run_id}"):
+            pattern = pattern.replace(token, "*")
+        p = storage_paths.resolve_data_path(pattern, default_base_kind="logs")
+        if p.is_absolute():
+            for matched in p.parent.glob(p.name):
+                files.add(matched)
+
+    return sorted([f for f in files if f.exists() and f.is_file()], reverse=True)
+
+
 def _display_path(path: Path) -> str:
     output_root = storage_paths.get_output_root()
     try:
@@ -991,7 +1055,7 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
 def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
     _ensure_dirs()
     items: list[dict] = []
-    files = sorted(_runs_dir().glob("*.jsonl"), reverse=True)
+    files = _event_log_files_for_scan()
     for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -1018,7 +1082,7 @@ def list_runs(task_id: str | None = None, limit: int = 100) -> list[dict]:
 def get_run_events(run_id: str) -> list[dict]:
     _ensure_dirs()
     items: list[dict] = []
-    files = sorted(_runs_dir().glob("*.jsonl"), reverse=True)
+    files = _event_log_files_for_scan()
     for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -1074,6 +1138,62 @@ def api_list_tasks() -> list[dict]:
         item["_errors"] = task.get("_errors", [])
         out.append(item)
     return out
+
+
+def _deep_merge_dict(dst: dict, src: dict) -> dict:
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge_dict(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
+def get_task_settings(task_id: str) -> dict | None:
+    task = get_task(task_id)
+    if not task:
+        return None
+    spec = task.get("spec", {})
+    return {
+        "mode": spec.get("mode"),
+        "runBackend": spec.get("runBackend"),
+        "schedule": spec.get("schedule", {}),
+        "input": {
+            "prompt": spec.get("input", {}).get("prompt", ""),
+        },
+        "execution": spec.get("execution", {}),
+        "modeConfig": spec.get("modeConfig", {}),
+        "output": spec.get("output", {}),
+        "logging": spec.get("logging", {}),
+    }
+
+
+def update_task_settings(task_id: str, payload: dict) -> dict:
+    task = get_task(task_id)
+    if not task:
+        return {"success": False, "error": "task not found"}
+    if not isinstance(payload, dict):
+        return {"success": False, "error": "payload must be object"}
+
+    task_copy = {k: v for k, v in task.items() if not k.startswith("_")}
+    spec = task_copy.setdefault("spec", {})
+
+    updatable = ("mode", "runBackend", "schedule", "input", "execution", "modeConfig", "output", "logging")
+    for key in updatable:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, dict):
+            current = spec.setdefault(key, {})
+            if not isinstance(current, dict):
+                spec[key] = value
+            else:
+                _deep_merge_dict(current, value)
+        else:
+            spec[key] = value
+
+    saved = save_task(task_copy)
+    return {"success": True, "task": _safe_task_for_api(saved), "settings": get_task_settings(task_id)}
 
 
 def cli_main(argv: list[str] | None = None) -> int:
