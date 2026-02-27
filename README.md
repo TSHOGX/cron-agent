@@ -14,8 +14,10 @@
 
 ## 运行架构
 
-- `tmux`：常驻循环执行截图与记录（`scheduler.py capture`）
-- `cron`：按配置时间触发各类总结（`scheduler.py summary ...`）
+- `cron_manager.py`：统一任务控制平面（任务 CRUD、同步、状态、运行日志）
+- `tmux backend`：用于 interval 循环任务（如截图分析）
+- `cron backend`：用于 cron 表达式任务（如日报/周报/月报）
+- `job_workers.py`：任务执行单元（截图分析、日报/周报/月报）
 - `Flask`：提供控制台与 API（`api.py`，默认 `18001` 端口）
 
 ## 环境要求
@@ -24,6 +26,7 @@
 - macOS（依赖 `screencapture`）
 - `tmux`
 - `crontab`（系统 cron）
+- `codex` CLI（`mode=agent` 执行所需）
 - 屏幕录制权限（终端/运行进程必须授权）
 
 ## 快速开始
@@ -50,47 +53,36 @@ python3 api.py
 # Cron Manager 任务列表
 python3 cron_manager.py list-tasks
 
-# 校验 / 应用任务 YAML
-python3 cron_manager.py validate tasks/demo_llm.yaml
-python3 cron_manager.py apply tasks/demo_llm.yaml
+# 校验任务 YAML
+python3 cron_manager.py validate tasks/capture_analyze.yaml
+python3 cron_manager.py validate tasks/summary_daily.yaml
+python3 cron_manager.py validate tasks/summary_weekly.yaml
+python3 cron_manager.py validate tasks/summary_monthly.yaml
 
 # 手动触发一次任务
-python3 cron_manager.py run-task demo-llm-heartbeat --trigger manual
+python3 cron_manager.py run-task capture-analyze --trigger manual
+python3 cron_manager.py run-task summary-daily --trigger manual
+python3 cron_manager.py run-task summary-weekly --trigger manual
+python3 cron_manager.py run-task summary-monthly --trigger manual
 
 # 任务暂停 / 恢复 / 删除
-python3 cron_manager.py pause demo-llm-heartbeat
-python3 cron_manager.py resume demo-llm-heartbeat
-python3 cron_manager.py delete demo-llm-heartbeat
+python3 cron_manager.py pause capture-analyze
+python3 cron_manager.py resume capture-analyze
+python3 cron_manager.py delete capture-analyze
 
 # 同步任务到两种后端（tmux + cron）与查看状态
 python3 cron_manager.py sync
-python3 cron_manager.py scheduler-status
 python3 cron_manager.py backends-status
 
-# 单次截图+分析+记录
-python3 scheduler.py capture
+# 迁移后四个核心任务 smoke test
+./scripts/test_migrated_tasks.sh
 
-# 生成总结
-python3 scheduler.py summary daily
-python3 scheduler.py summary weekly
-python3 scheduler.py summary monthly
-python3 scheduler.py summary morning
-python3 scheduler.py summary afternoon
-python3 scheduler.py summary evening
-
-# 管理截图服务（tmux）
-python3 scheduler.py tmux start
-python3 scheduler.py tmux stop
-python3 scheduler.py tmux status
-
-# 管理汇总服务（cron）
-python3 scheduler.py cron start
-python3 scheduler.py cron stop
-python3 scheduler.py cron status
+# 快速 E2E（仅测 capture + daily）
+FAST=1 ./scripts/test_migrated_tasks.sh
 
 # 自检与清理
-python3 scheduler.py test
-python3 scheduler.py cleanup
+python3 job_workers.py capture-analyze
+python3 job_workers.py cleanup
 ```
 
 ## 配置说明
@@ -117,6 +109,12 @@ python3 scheduler.py cleanup
 - `spec.runBackend: cron | tmux`
 - 当 `runBackend=cron`：使用 `spec.schedule.cron`（5 段 cron 表达式）
 - 当 `runBackend=tmux`：使用 `spec.schedule.intervalSeconds`（正整数秒）
+
+执行模式语义：
+
+- `spec.mode=agent`：由 coding agent（SDK）执行任务，不再通过 `commandTemplate` 直接执行本地命令。
+- `spec.mode=llm`：由 LLM 文本生成器执行。
+- `spec.mode=agent` 下若配置 `spec.modeConfig.agent.commandTemplate`，校验会失败（已废弃）。
 
 示例（cron）：
 
@@ -154,12 +152,7 @@ spec:
 
 ## API 一览
 
-- `GET /api/status`：服务状态（tmux + cron）
-- `POST /api/capture/start`：启动截图服务
-- `POST /api/capture/stop`：停止截图服务
-- `POST /api/summarizer/start`：安装并启动 cron 汇总任务
-- `POST /api/summarizer/stop`：移除 cron 汇总任务
-- `POST /api/services/restart`：重启全部服务
+- `GET /api/status`：统一服务状态（cron manager + backends）
 - `GET|POST /api/config`：读取/更新配置
 - `GET|POST /api/record_prompt`：读取/更新截图提示词
 - `GET|POST /api/summary_prompt`：读取/更新总结提示词
@@ -168,7 +161,6 @@ spec:
 - `GET /api/journal/<period>`：总结文件列表（`daily|weekly|monthly|period`）
 - `GET /api/journal/<period>/<filename>`：总结内容
 - `GET /api/messages`：消息列表
-- `POST /api/messages/check`：检查并补齐缺失总结
 - `GET /api/tasks`：Cron Manager 任务列表
 - `POST /api/tasks`：创建任务
 - `PUT /api/tasks/<task_id>`：更新任务
@@ -183,18 +175,19 @@ spec:
 - `GET /api/runs`：任务运行摘要（JSONL 聚合）
 - `GET /api/runs/<run_id>/events`：单次运行事件流
 
-兼容旧接口：
+旧 demo 调度接口已日落：不再提供 `capture/summarizer/services/cron` 这些旧启动停止接口。
 
-- `POST /api/cron/restart`
-- `POST /api/cron/stop`
+状态页按钮已切换为新接口语义：
+
+- 启动/停止截图：`pause/resume capture-analyze` + `POST /api/tasks/sync`
+- 启动/停止汇总：`pause/resume summary-*` + `POST /api/tasks/sync`
 
 ## 目录结构
 
 ```text
 cron_agent/
 ├── api.py
-├── scheduler.py
-├── capture.py
+├── job_workers.py
 ├── analyzer.py
 ├── recorder.py
 ├── summarizer.py

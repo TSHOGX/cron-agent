@@ -1,0 +1,38 @@
+apiVersion: cron-agent/v1
+kind: CronTask
+metadata:
+  id: summary-daily
+  name: Summary Daily
+  enabled: true
+spec:
+  mode: agent
+  runBackend: cron
+  schedule:
+    cron: "0 5 * * *"
+    timezone: Asia/Shanghai
+    maxConcurrency: 1
+    misfirePolicy: run_once
+  input:
+    prompt: |
+      Generate today's daily summary from existing records and save it into journal/daily.
+      Required outcome:
+      1) Use local project logic/data to generate the summary.
+      2) Ensure the target markdown artifact is updated.
+      3) Return a concise Chinese summary of the generated content.
+  execution:
+    timeoutSeconds: 180
+    workingDirectory: "."
+    retry:
+      maxAttempts: 1
+      backoffSeconds: 0
+  modeConfig:
+    agent:
+      provider: codex_cli
+      model: gpt-5-codex
+      sandboxMode: workspace-write
+  output:
+    sink: file
+    pathTemplate: artifacts/{task_id}/{run_id}/result.txt
+    format: text
+  logging:
+    eventJsonlPath: logs/runs/{date}.jsonl

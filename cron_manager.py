@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import inspect
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import shlex
 
 try:
     import yaml  # type: ignore
@@ -149,10 +151,10 @@ def _fill_defaults(task: dict) -> dict:
 
     mode_cfg = spec.setdefault("modeConfig", {})
     agent_cfg = mode_cfg.setdefault("agent", {})
-    agent_cfg.setdefault("provider", "cloud_code_cli")
-    agent_cfg.setdefault("model", "sonnet")
-    agent_cfg.setdefault("allowImagePathInPrompt", True)
-    agent_cfg.setdefault("commandTemplate", "claude -p --output-format json -- {prompt}")
+    agent_cfg.setdefault("provider", "codex_cli")
+    agent_cfg.setdefault("model", "gpt-5-codex")
+    agent_cfg.setdefault("sandboxMode", "workspace-write")
+    agent_cfg.setdefault("systemPrompt", "")
 
     llm_cfg = mode_cfg.setdefault("llm", {})
     llm_cfg.setdefault("provider", "kimi_openai_compat")
@@ -225,6 +227,24 @@ def validate_task(task: dict) -> list[str]:
 
             if schedule.get("misfirePolicy", "run_once") not in ("run_once", "skip"):
                 errors.append("spec.schedule.misfirePolicy must be run_once or skip")
+
+        if mode == "agent":
+            mode_cfg = spec.get("modeConfig", {})
+            agent_cfg = mode_cfg.get("agent", {}) if isinstance(mode_cfg, dict) else {}
+            if not isinstance(agent_cfg, dict):
+                errors.append("spec.modeConfig.agent must be an object when spec.mode=agent")
+            else:
+                provider = agent_cfg.get("provider", "codex_cli")
+                if provider not in ("codex_cli", "claude_agent_sdk"):
+                    errors.append("spec.modeConfig.agent.provider must be codex_cli or claude_agent_sdk")
+                if agent_cfg.get("commandTemplate"):
+                    errors.append("spec.modeConfig.agent.commandTemplate is deprecated; mode=agent must use coding agent SDK execution")
+
+            prompt = spec.get("input", {}).get("prompt", "")
+            if isinstance(prompt, str):
+                prompt_lower = prompt.lower()
+                if "scheduler.py capture" in prompt_lower or "scheduler.py summary" in prompt_lower:
+                    errors.append("spec.input.prompt must not call scheduler.py capture|summary in mode=agent")
 
     return errors
 
@@ -489,11 +509,6 @@ def get_backends_status() -> dict:
     return {"cron": cron_status, "tmux": tmux_status}
 
 
-def get_scheduler_status() -> dict:
-    # Backward-compatible alias for previous API usage (cron-only summary).
-    return get_cron_backend_status()
-
-
 def _safe_task_for_api(task: dict) -> dict:
     return {k: v for k, v in task.items() if not k.startswith("_")}
 
@@ -592,18 +607,101 @@ def _execute_llm(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, s
         return False, "", {"error": str(e), "elapsed": elapsed, "timeout": timeout_seconds}
 
 
-def _execute_agent(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
+def _filter_kwargs_by_signature(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        sig = inspect.signature(callable_obj)
+    except Exception:
+        return kwargs
+    allowed = set(sig.parameters.keys())
+    return {k: v for k, v in kwargs.items() if k in allowed}
+
+
+def _extract_text_from_agent_message(message: Any, tool_calls: list[str]) -> str:
+    parts: list[str] = []
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        for block in content:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+            name = getattr(block, "name", None)
+            if isinstance(name, str) and name.strip():
+                tool_calls.append(name.strip())
+    elif isinstance(content, str) and content.strip():
+        parts.append(content.strip())
+
+    for field in ("result", "output", "text"):
+        value = getattr(message, field, None)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return "\n".join(parts).strip()
+
+
+async def _run_agent_query(task: dict, prompt: str) -> tuple[str, dict]:
+    from claude_agent_sdk import query, ClaudeAgentOptions  # type: ignore
+
     cfg = task["spec"]["modeConfig"].get("agent", {})
-    template = cfg.get("commandTemplate", "claude -p --output-format json -- {prompt}")
-    # Avoid str.format so literal JSON braces in command templates do not break parsing.
-    command = template.replace("{prompt}", shlex.quote(prompt)).replace("{task_id}", task["metadata"]["id"])
+    options_kwargs: dict[str, Any] = {
+        "allowed_tools": cfg.get("allowedTools"),
+        "permission_mode": cfg.get("permissionMode", "acceptEdits"),
+        "model": cfg.get("model"),
+        "system_prompt": cfg.get("systemPrompt", ""),
+    }
+    options_kwargs = {k: v for k, v in options_kwargs.items() if v not in (None, "", [])}
+
+    options = ClaudeAgentOptions(**_filter_kwargs_by_signature(ClaudeAgentOptions, options_kwargs))
+
+    full_prompt = prompt
+    system_prompt = cfg.get("systemPrompt")
+    if isinstance(system_prompt, str) and system_prompt.strip():
+        full_prompt = f"[System Instruction]\n{system_prompt.strip()}\n\n[Task]\n{prompt}"
+
+    query_kwargs = _filter_kwargs_by_signature(query, {"prompt": full_prompt, "options": options})
+    messages: list[str] = []
+    tool_calls: list[str] = []
+    last_message_type = ""
+    async for message in query(**query_kwargs):
+        last_message_type = message.__class__.__name__
+        text = _extract_text_from_agent_message(message, tool_calls)
+        if text:
+            messages.append(text)
+
+    final_text = "\n\n".join([m for m in messages if m]).strip()
+    return final_text, {
+        "tool_calls": tool_calls,
+        "message_count": len(messages),
+        "last_message_type": last_message_type,
+    }
+
+
+def _execute_agent_via_codex_cli(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
+    cfg = task["spec"]["modeConfig"].get("agent", {})
+    model = cfg.get("model", "gpt-5-codex")
+    sandbox_mode = cfg.get("sandboxMode", "workspace-write")
+    system_prompt = cfg.get("systemPrompt", "")
+    final_prompt = prompt if not system_prompt else f"[System Instruction]\n{system_prompt}\n\n[Task]\n{prompt}"
+    working_dir = BASE_DIR / task["spec"]["execution"].get("workingDirectory", ".")
+
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as f:
+        output_path = f.name
+    cmd = [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        str(sandbox_mode),
+        "--output-last-message",
+        output_path,
+    ]
+    if model:
+        cmd.extend(["--model", str(model)])
+    cmd.append(final_prompt)
 
     started = time.time()
     try:
         result = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(BASE_DIR / task["spec"]["execution"].get("workingDirectory", ".")),
+            cmd,
+            cwd=str(working_dir),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -612,21 +710,22 @@ def _execute_agent(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool,
         elapsed = time.time() - started
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
+        text = ""
+        try:
+            text = Path(output_path).read_text(encoding="utf-8").strip()
+        except Exception:
+            text = ""
+
         if result.returncode != 0:
             return False, "", {
                 "returncode": result.returncode,
                 "stdout": stdout,
                 "stderr": stderr,
                 "elapsed": elapsed,
+                "error": "codex cli execution failed",
             }
-
-        text = stdout
-        if stdout.startswith("{"):
-            try:
-                j = json.loads(stdout)
-                text = j.get("result") or j.get("output") or stdout
-            except Exception:
-                pass
+        if not text:
+            return False, "", {"stdout": stdout, "stderr": stderr, "elapsed": elapsed, "error": "empty codex response"}
         return True, text, {"stdout": stdout, "stderr": stderr, "elapsed": elapsed}
     except subprocess.TimeoutExpired as e:
         elapsed = time.time() - started
@@ -639,6 +738,39 @@ def _execute_agent(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool,
     except Exception as e:
         elapsed = time.time() - started
         return False, "", {"error": str(e), "elapsed": elapsed}
+    finally:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+
+
+def _execute_agent(task: dict, prompt: str, timeout_seconds: int) -> tuple[bool, str, dict]:
+    cfg = task["spec"]["modeConfig"].get("agent", {})
+    provider = cfg.get("provider", "codex_cli")
+    if provider == "codex_cli":
+        return _execute_agent_via_codex_cli(task, prompt, timeout_seconds)
+    if provider != "claude_agent_sdk":
+        return False, "", {"error": f"unsupported agent provider: {provider}"}
+
+    working_dir = BASE_DIR / task["spec"]["execution"].get("workingDirectory", ".")
+    started = time.time()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(working_dir))
+        text, meta = asyncio.run(asyncio.wait_for(_run_agent_query(task, prompt), timeout=float(timeout_seconds)))
+        elapsed = time.time() - started
+        if not text.strip():
+            return False, "", {"error": "empty agent response", "elapsed": elapsed, **meta}
+        return True, text, {"elapsed": elapsed, **meta}
+    except asyncio.TimeoutError:
+        elapsed = time.time() - started
+        return False, "", {"error": f"agent timeout after {timeout_seconds}s", "elapsed": elapsed}
+    except Exception as e:
+        elapsed = time.time() - started
+        return False, "", {"error": str(e), "elapsed": elapsed}
+    finally:
+        os.chdir(old_cwd)
 
 
 def _write_output(task: dict, run_id: str, text: str) -> str:
@@ -661,6 +793,26 @@ def _mark_task_running(task_id: str, run_id: str) -> bool:
     info["started_at"] = _now_iso()
     _save_state(state)
     return True
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except Exception:
+        return None
+
+
+def _clear_stale_running_lock(task_id: str, stale_error: str) -> None:
+    state = _load_state()
+    info = state.setdefault("tasks", {}).setdefault(task_id, {})
+    info["running"] = False
+    info["current_run_id"] = None
+    info["last_status"] = "failed"
+    info["last_error"] = stale_error
+    info["last_finished_at"] = _now_iso()
+    _save_state(state)
 
 
 def _mark_task_finished(task_id: str, status: str, run_id: str, error: str | None = None) -> None:
@@ -740,6 +892,19 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
     max_concurrency = int(spec["schedule"].get("maxConcurrency", 1))
     lock_acquired = False
     if max_concurrency <= 1:
+        state = _load_state()
+        info = state.setdefault("tasks", {}).setdefault(task_id, {})
+        if info.get("running", False):
+            started_at = _parse_iso(info.get("started_at"))
+            timeout_seconds = int(spec["execution"].get("timeoutSeconds", 600))
+            stale_after = max(60, timeout_seconds + 30)
+            if started_at is None:
+                _clear_stale_running_lock(task_id, "stale running lock recovered (invalid started_at)")
+            else:
+                age_seconds = (datetime.now().astimezone() - started_at).total_seconds()
+                if age_seconds > stale_after:
+                    _clear_stale_running_lock(task_id, f"stale running lock recovered (age={int(age_seconds)}s)")
+
         lock_acquired = _mark_task_running(task_id, run_id)
         if not lock_acquired:
             _write_event(task, run_id, "run.skipped.concurrent", meta={"trigger": trigger})
@@ -772,6 +937,8 @@ def run_task(task_id: str, trigger: str = "manual") -> dict:
                 _write_event(task, run_id, "executor.stdout", attempt=attempt, stdout=str(meta.get("stdout"))[:8000])
             if spec.get("logging", {}).get("saveStderr", True) and meta.get("stderr"):
                 _write_event(task, run_id, "executor.stderr", attempt=attempt, stderr=str(meta.get("stderr"))[:8000])
+            if spec.get("logging", {}).get("saveToolCalls", True) and meta.get("tool_calls"):
+                _write_event(task, run_id, "executor.tool_calls", attempt=attempt, tool_calls=meta.get("tool_calls"))
 
             if ok:
                 final_text = text
@@ -924,7 +1091,6 @@ def cli_main(argv: list[str] | None = None) -> int:
     st.add_argument("task_id")
 
     sub.add_parser("sync")
-    sub.add_parser("scheduler-status")
     sub.add_parser("backends-status")
 
     args = parser.parse_args(argv)
@@ -963,9 +1129,6 @@ def cli_main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "sync":
         print(json.dumps(sync_all_tasks(), ensure_ascii=False, indent=2))
-        return 0
-    if args.cmd == "scheduler-status":
-        print(json.dumps(get_scheduler_status(), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "backends-status":
         print(json.dumps(get_backends_status(), ensure_ascii=False, indent=2))

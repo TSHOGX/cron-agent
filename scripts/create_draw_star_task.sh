@@ -35,7 +35,9 @@ cat <<'JSON' | curl -sS -X POST "$BASE_URL/api/tasks" -H "Content-Type: applicat
     },
     "modeConfig": {
       "agent": {
-        "commandTemplate": "claude -p --model sonnet --dangerously-skip-permissions --output-format json -- {prompt}"
+        "provider": "codex_cli",
+        "model": "gpt-5-codex",
+        "sandboxMode": "workspace-write"
       }
     },
     "output": {

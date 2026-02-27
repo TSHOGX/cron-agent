@@ -2,8 +2,6 @@
 """Flask API server for cron agent control panel."""
 
 import json
-import os
-import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,7 +26,6 @@ def save_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
-import scheduler
 import recorder
 import cron_manager
 
@@ -39,87 +36,14 @@ def _public_task(task: dict) -> dict:
 
 
 def get_status():
-    """Get overall service status (both tmux and cron)."""
-    tmux_status = scheduler.get_tmux_status()
-    cron_status = scheduler.get_cron_status()
-    manager_status = cron_manager.get_scheduler_status()
+    """Get service status from cron manager backends."""
     backends_status = cron_manager.get_backends_status()
 
     return {
-        "capture": {
-            "type": "tmux",
-            "running": tmux_status.get("running", False),
-            "session": tmux_status.get("session", ""),
-            "info": tmux_status.get("info", "")
-        },
-        "summarizer": {
-            "type": "cron",
-            "installed": cron_status.get("installed", False),
-            "jobs": cron_status.get("jobs", []),
-            "description": cron_status.get("description", "")
-        },
         "cron_manager": {
-            "type": "adapter",
-            "installed": manager_status.get("installed", False),
-            "jobs": manager_status.get("jobs", []),
-            "count": manager_status.get("count", 0),
             "backends": backends_status,
         }
     }
-
-
-def get_cron_status():
-    """Get cron service status (for summarizer)."""
-    return scheduler.get_cron_status()
-
-
-def restart_cron():
-    """Restart tmux capture service."""
-    return scheduler.restart_tmux_service()
-
-
-def stop_cron_service():
-    """Stop tmux capture service."""
-    return scheduler.stop_tmux_service()
-
-
-def start_summarizer_service():
-    """Start cron summarizer service."""
-    return scheduler.install_cron_service()
-
-
-def stop_summarizer_service():
-    """Stop cron summarizer service."""
-    return scheduler.stop_cron_service()
-
-
-def restart_all_services():
-    """Restart both tmux and cron services."""
-    results = {
-        "tmux": None,
-        "cron": None
-    }
-
-    # Restart tmux service
-    tmux_result = scheduler.restart_tmux_service()
-    results["tmux"] = tmux_result
-
-    # Restart cron service
-    cron_result = scheduler.install_cron_service()
-    results["cron"] = cron_result
-
-    # Determine overall success
-    all_success = tmux_result.get("success", False) and cron_result.get("success", False)
-
-    if all_success:
-        return {"success": True, "message": "所有服务已重启", "details": results}
-    else:
-        errors = []
-        if not tmux_result.get("success", False):
-            errors.append(f"截图服务: {tmux_result.get('error', '未知错误')}")
-        if not cron_result.get("success", False):
-            errors.append(f"汇总服务: {cron_result.get('error', '未知错误')}")
-        return {"success": False, "message": "部分服务重启失败", "errors": errors, "details": results}
 
 
 def get_records(date=None, limit=50):
@@ -191,51 +115,8 @@ def get_journal_content(period: str, filename: str):
 # API Routes
 @app.route('/api/status')
 def api_status():
-    """Get overall service status (both tmux and cron)."""
+    """Get overall service status from cron manager."""
     return jsonify(get_status())
-
-
-@app.route('/api/capture/start', methods=['POST'])
-def api_capture_start():
-    """Start tmux capture service."""
-    return jsonify(restart_cron())
-
-
-@app.route('/api/capture/stop', methods=['POST'])
-def api_capture_stop():
-    """Stop tmux capture service."""
-    return jsonify(stop_cron_service())
-
-
-@app.route('/api/summarizer/start', methods=['POST'])
-def api_summarizer_start():
-    """Start cron summarizer service."""
-    return jsonify(start_summarizer_service())
-
-
-@app.route('/api/summarizer/stop', methods=['POST'])
-def api_summarizer_stop():
-    """Stop cron summarizer service."""
-    return jsonify(stop_summarizer_service())
-
-
-@app.route('/api/services/restart', methods=['POST'])
-def api_services_restart():
-    """Restart both tmux and cron services."""
-    return jsonify(restart_all_services())
-
-
-# Legacy API endpoints (for backward compatibility)
-@app.route('/api/cron/restart', methods=['POST'])
-def api_cron_restart():
-    """Restart tmux service (legacy)."""
-    return jsonify(restart_cron())
-
-
-@app.route('/api/cron/stop', methods=['POST'])
-def api_cron_stop():
-    """Stop tmux service (legacy)."""
-    return jsonify(stop_cron_service())
 
 
 @app.route('/api/config')
@@ -370,31 +251,6 @@ def api_messages():
     limit = int(request.args.get('limit', 100))
     messages = recorder.read_messages(limit=limit)
     return jsonify(messages)
-
-
-@app.route('/api/messages/check', methods=['POST'])
-def api_messages_check():
-    """Check and fill missing summaries, return filled list."""
-    try:
-        filled = scheduler.check_and_fill_missing_summaries()
-
-        # Save messages for filled summaries
-        for item in filled:
-            msg = {
-                "type": item["period"],
-                "period": item["date"],
-                "filled": True,
-                "timestamp": item["timestamp"]
-            }
-            recorder.save_message(msg)
-
-        return jsonify({
-            "success": True,
-            "filled": filled,
-            "count": len(filled)
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/tasks', methods=['GET'])

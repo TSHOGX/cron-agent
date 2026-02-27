@@ -4,7 +4,6 @@ let config = {};
 let prompt = {};
 let summaryPrompt = {};
 let currentJournalPeriod = 'daily';
-let isChecking = false;
 
 // API Helpers
 async function apiCall(url, options = {}) {
@@ -116,7 +115,13 @@ async function loadStatus() {
     // Handle Capture Service (Tmux)
     const captureIndicator = document.getElementById('capture-status-indicator');
     const captureStatusText = document.getElementById('capture-status-text');
-    const capture = status.capture || {};
+    const backends = status?.cron_manager?.backends || {};
+    const tmux = backends.tmux || {};
+    const cron = backends.cron || {};
+    const capture = {
+        running: !!tmux.running,
+        session: (tmux.sessions && tmux.sessions[0]) || ''
+    };
 
     if (capture.running) {
         captureIndicator.querySelector('span').textContent = '运行中';
@@ -125,13 +130,17 @@ async function loadStatus() {
     } else {
         captureIndicator.querySelector('span').textContent = '未运行';
         captureIndicator.querySelector('.status-dot').className = 'status-dot inactive';
-        captureStatusText.textContent = '点击"启动/重启截图"开始定时截图';
+        captureStatusText.textContent = '点击"启动/重启截图"恢复 capture-analyze 任务';
     }
 
     // Handle Summarizer Service (Cron)
     const summarizerIndicator = document.getElementById('summarizer-status-indicator');
     const summarizerStatusText = document.getElementById('summarizer-status-text');
-    const summarizer = status.summarizer || {};
+    const summarizer = {
+        installed: !!cron.installed,
+        jobs: cron.jobs || [],
+        error: ''
+    };
 
     if (summarizer.installed) {
         summarizerIndicator.querySelector('span').textContent = '运行中';
@@ -140,7 +149,7 @@ async function loadStatus() {
     } else {
         summarizerIndicator.querySelector('span').textContent = '未运行';
         summarizerIndicator.querySelector('.status-dot').className = 'status-dot inactive';
-        summarizerStatusText.textContent = summarizer.error || '点击"启动/重启汇总"开始定时汇总';
+        summarizerStatusText.textContent = summarizer.error || '点击"启动/重启汇总"恢复 summary-* 任务';
     }
 
     // Show service jobs with next run time
@@ -165,17 +174,14 @@ async function loadStatus() {
             const parts = job.trim().split(/\s+/);
             if (parts.length >= 6) {
                 const cronExpr = parts.slice(0, 5).join(' ');
-                const cmd = parts.slice(5).join(' ').replace(/.*scheduler\.py /, '');
+                const cmd = parts.slice(5).join(' ');
                 const nextRun = getNextRunTime(cronExpr);
 
                 // Map command to friendly name
                 let jobName = '汇总';
-                if (cmd.includes('daily')) jobName = '日报';
-                else if (cmd.includes('weekly')) jobName = '周报';
-                else if (cmd.includes('monthly')) jobName = '月报';
-                else if (cmd.includes('morning')) jobName = '上午总结';
-                else if (cmd.includes('afternoon')) jobName = '下午总结';
-                else if (cmd.includes('evening')) jobName = '晚上总结';
+                if (cmd.includes('summary-daily')) jobName = '日报';
+                else if (cmd.includes('summary-weekly')) jobName = '周报';
+                else if (cmd.includes('summary-monthly')) jobName = '月报';
 
                 allJobs.push({
                     service: `${jobName} (Cron)`,
@@ -208,12 +214,13 @@ async function loadStatus() {
 // Start Capture Service (Tmux)
 document.getElementById('btn-start-capture').addEventListener('click', async () => {
     showToast('正在启动截图服务...', 'info');
-    const result = await apiCall('/api/capture/start', { method: 'POST' });
-    if (result && result.success) {
+    const resumeResult = await apiCall('/api/tasks/capture-analyze/resume', { method: 'POST' });
+    const syncResult = await apiCall('/api/tasks/sync', { method: 'POST' });
+    if (resumeResult && resumeResult.success && syncResult && syncResult.success) {
         showToast('截图服务已启动', 'success');
         loadStatus();
     } else {
-        showToast('启动失败: ' + (result?.error || '未知错误'), 'error');
+        showToast('启动失败: ' + (resumeResult?.error || syncResult?.error || '未知错误'), 'error');
     }
 });
 
@@ -222,24 +229,31 @@ document.getElementById('btn-stop-capture').addEventListener('click', async () =
     if (!confirm('确定要停止截图服务吗？停止后将不再自动截图。')) return;
 
     showToast('正在停止截图服务...', 'info');
-    const result = await apiCall('/api/capture/stop', { method: 'POST' });
-    if (result && result.success) {
+    const pauseResult = await apiCall('/api/tasks/capture-analyze/pause', { method: 'POST' });
+    const syncResult = await apiCall('/api/tasks/sync', { method: 'POST' });
+    if (pauseResult && pauseResult.success && syncResult && syncResult.success) {
         showToast('截图服务已停止', 'success');
         loadStatus();
     } else {
-        showToast('停止失败: ' + (result?.error || '未知错误'), 'error');
+        showToast('停止失败: ' + (pauseResult?.error || syncResult?.error || '未知错误'), 'error');
     }
 });
 
 // Start Summarizer Service (Cron)
 document.getElementById('btn-start-summarizer').addEventListener('click', async () => {
     showToast('正在启动汇总服务...', 'info');
-    const result = await apiCall('/api/summarizer/start', { method: 'POST' });
-    if (result && result.success) {
+    const ids = ['summary-daily', 'summary-weekly', 'summary-monthly'];
+    let ok = true;
+    for (const id of ids) {
+        const r = await apiCall(`/api/tasks/${id}/resume`, { method: 'POST' });
+        if (!r || !r.success) ok = false;
+    }
+    const syncResult = await apiCall('/api/tasks/sync', { method: 'POST' });
+    if (ok && syncResult && syncResult.success) {
         showToast('汇总服务已启动', 'success');
         loadStatus();
     } else {
-        showToast('启动失败: ' + (result?.error || '未知错误'), 'error');
+        showToast('启动失败: ' + (syncResult?.error || '部分任务恢复失败'), 'error');
     }
 });
 
@@ -248,12 +262,18 @@ document.getElementById('btn-stop-summarizer').addEventListener('click', async (
     if (!confirm('确定要停止汇总服务吗？停止后将不再自动生成汇总。')) return;
 
     showToast('正在停止汇总服务...', 'info');
-    const result = await apiCall('/api/summarizer/stop', { method: 'POST' });
-    if (result && result.success) {
+    const ids = ['summary-daily', 'summary-weekly', 'summary-monthly'];
+    let ok = true;
+    for (const id of ids) {
+        const r = await apiCall(`/api/tasks/${id}/pause`, { method: 'POST' });
+        if (!r || !r.success) ok = false;
+    }
+    const syncResult = await apiCall('/api/tasks/sync', { method: 'POST' });
+    if (ok && syncResult && syncResult.success) {
         showToast('汇总服务已停止', 'success');
         loadStatus();
     } else {
-        showToast('停止失败: ' + (result?.error || '未知错误'), 'error');
+        showToast('停止失败: ' + (syncResult?.error || '部分任务暂停失败'), 'error');
     }
 });
 
@@ -321,18 +341,16 @@ document.getElementById('btn-save-config').addEventListener('click', async () =>
     });
 
     if (result && result.success) {
-        showToast('配置已保存，正在重启服务...', 'info');
-
-        // Restart both services
-        const restartResult = await apiCall('/api/services/restart', {
+        showToast('配置已保存，正在同步任务...', 'info');
+        const syncResult = await apiCall('/api/tasks/sync', {
             method: 'POST'
         });
 
-        if (restartResult && restartResult.success) {
-            showToast('配置已保存，服务已重启', 'success');
+        if (syncResult && syncResult.success) {
+            showToast('配置已保存，任务已同步', 'success');
+            loadStatus();
         } else {
-            const errorMsg = restartResult?.errors?.join(', ') || '未知错误';
-            showToast('配置已保存，但服务重启失败: ' + errorMsg, 'error');
+            showToast('配置已保存，但同步失败: ' + (syncResult?.error || '未知错误'), 'error');
         }
         config = { ...config, ...newConfig };
     } else {
@@ -585,33 +603,9 @@ async function loadMessages() {
     }).join('');
 }
 
-// Check and fill missing summaries
+// Sunset legacy catch-up button.
 document.getElementById('btn-check-messages').addEventListener('click', async () => {
-    if (isChecking) return;
-
-    isChecking = true;
-    const btn = document.getElementById('btn-check-messages');
-    btn.disabled = true;
-    btn.textContent = '检查中...';
-
-    showToast('正在检查并补发遗漏的汇总...', 'info');
-
-    const result = await apiCall('/api/messages/check', { method: 'POST' });
-
-    if (result && result.success) {
-        if (result.count > 0) {
-            showToast(`已完成补发，共 ${result.count} 条`, 'success');
-        } else {
-            showToast('没有遗漏的汇总', 'info');
-        }
-        loadMessages();
-    } else {
-        showToast('检查失败: ' + (result?.error || '未知错误'), 'error');
-    }
-
-    isChecking = false;
-    btn.disabled = false;
-    btn.textContent = '检查并补发';
+    showToast('该功能已日落，请使用任务运行记录页查看与补跑。', 'info');
 });
 
 // Refresh messages
