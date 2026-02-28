@@ -3,15 +3,12 @@
 
 import json
 from datetime import datetime
-from pathlib import Path
 
 from flask import Flask, jsonify, request
 
-import cron_manager
-import recorder
-import storage_paths
-
-BASE_DIR = Path(__file__).parent
+from runtime import cron_manager
+from runtime import recorder
+from runtime import storage_paths
 
 app = Flask(__name__)
 
@@ -22,11 +19,11 @@ def _public_task(task: dict) -> dict:
 
 
 def get_status() -> dict:
-    """Get service status from cron manager backends."""
-    backends_status = cron_manager.get_backends_status()
+    """Get service status."""
+    scheduler_status = cron_manager.get_scheduler_status()
     return {
         "cron_manager": {
-            "backends": backends_status,
+            "scheduler": scheduler_status,
         }
     }
 
@@ -36,7 +33,6 @@ def get_records(date: str | None = None, limit: int = 50) -> list[dict]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    storage_paths.migrate_legacy_data_once()
     records_dir = recorder.get_records_dir()
     record_file = records_dir / f"{date}.jsonl"
 
@@ -58,7 +54,6 @@ def get_records(date: str | None = None, limit: int = 50) -> list[dict]:
 
 def get_all_record_dates() -> list[str]:
     """Get all available record dates."""
-    storage_paths.migrate_legacy_data_once()
     records_dir = recorder.get_records_dir()
     if not records_dir.exists():
         return []
@@ -69,7 +64,6 @@ def get_all_record_dates() -> list[str]:
 
 def get_journal_files(period: str = "daily") -> list[dict]:
     """Get journal files for a specific period."""
-    storage_paths.migrate_legacy_data_once()
     journal_dir = recorder.get_journal_dir() / period
     if not journal_dir.exists():
         return []
@@ -88,7 +82,6 @@ def get_journal_files(period: str = "daily") -> list[dict]:
 
 def get_journal_content(period: str, filename: str) -> str | None:
     """Get content of a specific journal file."""
-    storage_paths.migrate_legacy_data_once()
     journal_dir = recorder.get_journal_dir() / period
     filepath = journal_dir / filename
 
@@ -253,24 +246,16 @@ def api_task_status(task_id):
     return jsonify(result), status
 
 
-@app.route("/api/tasks/sync", methods=["POST"])
-def api_task_sync():
-    """Sync tasks to backends."""
-    result = cron_manager.sync_all_tasks()
-    status = 200 if result.get("success") else 500
-    return jsonify(result), status
+@app.route("/api/scheduler/status", methods=["GET"])
+def api_scheduler_status():
+    """Get scheduler status."""
+    return jsonify(cron_manager.get_scheduler_status())
 
 
-@app.route("/api/backends/status", methods=["GET"])
-def api_backends_status():
-    """Get tmux/cron backend status."""
-    return jsonify(cron_manager.get_backends_status())
-
-
-@app.route("/api/backends/sync", methods=["POST"])
-def api_backends_sync():
-    """Sync all tasks to both backends."""
-    result = cron_manager.sync_all_tasks()
+@app.route("/api/scheduler/sync", methods=["POST"])
+def api_scheduler_sync():
+    """Sync tasks to scheduler."""
+    result = cron_manager.sync_scheduler()
     status = 200 if result.get("success") else 500
     return jsonify(result), status
 
@@ -350,13 +335,6 @@ def api_run_get(run_id):
     result = cron_manager.get_run(run_id)
     status = 200 if result.get("found") else 404
     return jsonify(result), status
-
-
-@app.route("/api/runs/<run_id>/events", methods=["GET"])
-def api_run_events(run_id):
-    """Deprecated endpoint."""
-    _ = run_id
-    return jsonify({"error": "deprecated endpoint", "message": "run event logs have been sunset; use raw trace files"}), 410
 
 
 @app.route("/")

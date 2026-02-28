@@ -18,21 +18,19 @@ from pathlib import Path
 from typing import Any
 import shlex
 
-import process_manager
-import storage_paths
+from runtime import process_manager
+from runtime import storage_paths
 
 try:
     import yaml  # type: ignore
 except Exception:
     yaml = None
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = storage_paths.get_repo_root()
 TASKS_DIR = storage_paths.get_data_dir("tasks")
-TASK_TEMPLATES_DIR = BASE_DIR / "docs" / "task_templates"
 MARKER_BEGIN = "# >>> CRON_AGENT_MANAGED BEGIN >>>"
 MARKER_END = "# <<< CRON_AGENT_MANAGED END <<<"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-TMUX_SESSION_PREFIX = "cronmgr_"
 
 
 def _now_iso() -> str:
@@ -44,11 +42,8 @@ def _today_str() -> str:
 
 
 def _ensure_dirs() -> None:
-    storage_paths.migrate_legacy_data_once()
     storage_paths.ensure_data_layout()
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
-    _bootstrap_tasks_once()
-    _migrate_agent_provider_values_once()
 
 
 def _state_file_path() -> Path:
@@ -59,99 +54,6 @@ def _trace_index_path(date: datetime | None = None) -> Path:
     if date is None:
         date = datetime.now()
     return storage_paths.get_data_dir("logs") / "trace_index" / f"{date.strftime('%Y-%m-%d')}.jsonl"
-
-
-def _bootstrap_tasks_once() -> None:
-    """Populate local task directory from repo tasks/templates when empty."""
-    sentinel = storage_paths.get_data_dir("runtime") / ".tasks_bootstrapped_v1"
-    if sentinel.exists():
-        return
-
-    TASKS_DIR.mkdir(parents=True, exist_ok=True)
-    if any(TASKS_DIR.glob("*.yaml")):
-        sentinel.write_text("done\n", encoding="utf-8")
-        return
-
-    copied = 0
-    # Legacy in-repo task definitions.
-    legacy_dir = BASE_DIR / "tasks"
-    if legacy_dir.exists():
-        for src in sorted(legacy_dir.glob("*.yaml")):
-            dst = TASKS_DIR / src.name
-            if dst.exists():
-                continue
-            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-            copied += 1
-
-    # Tracked templates for clean installs.
-    if copied == 0 and TASK_TEMPLATES_DIR.exists():
-        for src in sorted(TASK_TEMPLATES_DIR.glob("*.yaml")):
-            dst = TASKS_DIR / src.name
-            if dst.exists():
-                continue
-            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-            copied += 1
-
-    report = {
-        "copied": copied,
-        "task_dir": str(TASKS_DIR),
-        "legacy_source": str(legacy_dir),
-        "template_source": str(TASK_TEMPLATES_DIR),
-    }
-    with open(storage_paths.get_data_dir("runtime") / "tasks_bootstrap_report_v1.json", "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-    sentinel.write_text("done\n", encoding="utf-8")
-
-
-def _migrate_agent_provider_values_once() -> None:
-    """One-time migration from legacy agent providers and logging config."""
-    sentinel = storage_paths.get_data_dir("runtime") / ".agent_provider_migrated_v1"
-    if sentinel.exists():
-        return
-
-    provider_map = {
-        "codex_cli": "codex",
-        "claude_agent_sdk": "claude",
-    }
-    migrated = 0
-    report: list[dict[str, Any]] = []
-
-    for path in sorted(TASKS_DIR.glob("*.yaml")):
-        try:
-            data = _yaml_load(path)
-            if not isinstance(data, dict):
-                continue
-            spec = data.get("spec")
-            if not isinstance(spec, dict):
-                continue
-            changed = False
-
-            mode_cfg = spec.get("modeConfig")
-            if isinstance(mode_cfg, dict):
-                agent_cfg = mode_cfg.get("agent")
-                if isinstance(agent_cfg, dict):
-                    raw_provider = agent_cfg.get("provider")
-                    mapped = provider_map.get(str(raw_provider), None)
-                    if mapped:
-                        agent_cfg["provider"] = mapped
-                        changed = True
-
-            if "logging" in spec:
-                spec.pop("logging", None)
-                changed = True
-
-            if changed:
-                _yaml_dump(path, data)
-                migrated += 1
-                report.append({"task_file": str(path), "status": "migrated"})
-        except Exception as e:
-            report.append({"task_file": str(path), "status": "error", "error": str(e)})
-
-    _save_json_file(
-        storage_paths.get_data_dir("runtime") / "agent_provider_migration_v1.json",
-        {"migrated": migrated, "report": report},
-    )
-    sentinel.write_text("done\n", encoding="utf-8")
 
 
 def _yaml_load(path: Path) -> dict:
@@ -222,7 +124,7 @@ def _validate_cron_expr(expr: str) -> bool:
 
 
 def _fill_defaults(task: dict) -> dict:
-    task.setdefault("apiVersion", "cron-agent/v1")
+    task.setdefault("apiVersion", "cron-agent")
     task.setdefault("kind", "CronTask")
     task.setdefault("metadata", {})
     task["metadata"].setdefault("enabled", True)
@@ -231,9 +133,7 @@ def _fill_defaults(task: dict) -> dict:
     spec = task["spec"]
     spec.setdefault("mode", "llm")
     spec.setdefault("paused", False)
-    schedule_seed = spec.get("schedule", {}) if isinstance(spec.get("schedule"), dict) else {}
-    default_backend = "tmux" if "intervalSeconds" in schedule_seed else "cron"
-    spec.setdefault("runBackend", default_backend)
+    spec.setdefault("runBackend", "cron")
 
     schedule = spec.setdefault("schedule", {})
     schedule.setdefault("timezone", DEFAULT_TIMEZONE)
@@ -269,12 +169,12 @@ def _fill_defaults(task: dict) -> dict:
     trace_cfg.setdefault("maxEventBytes", 262144)
 
     llm_cfg = mode_cfg.setdefault("llm", {})
-    llm_cfg.setdefault("provider", "kimi_openai_compat")
-    llm_cfg.setdefault("model", "kimi-k2.5")
+    llm_cfg.setdefault("provider", "openai_compatible")
+    llm_cfg.setdefault("model", "gpt-4o-mini")
     llm_cfg.setdefault("temperature", 0.2)
     llm_cfg.setdefault("maxTokens", 4000)
-    llm_cfg.setdefault("apiBase", "https://api.moonshot.cn/v1")
-    llm_cfg.setdefault("authRef", "env:KIMI_API_KEY")
+    llm_cfg.setdefault("apiBase", "https://api.openai.com/v1")
+    llm_cfg.setdefault("authRef", "env:OPENAI_API_KEY")
 
     output_cfg = spec.setdefault("output", {})
     output_cfg.setdefault("sink", "file")
@@ -289,8 +189,8 @@ def validate_task(task: dict) -> list[str]:
     if not isinstance(task, dict):
         return ["Task must be a mapping."]
 
-    if task.get("apiVersion") not in (None, "cron-agent/v1"):
-        errors.append("apiVersion must be cron-agent/v1")
+    if task.get("apiVersion") not in (None, "cron-agent"):
+        errors.append("apiVersion must be cron-agent")
     if task.get("kind") not in (None, "CronTask"):
         errors.append("kind must be CronTask")
 
@@ -312,23 +212,18 @@ def validate_task(task: dict) -> list[str]:
         if mode not in ("agent", "llm"):
             errors.append("spec.mode must be agent or llm")
         run_backend = spec.get("runBackend")
-        if run_backend not in ("tmux", "cron"):
-            errors.append("spec.runBackend must be tmux or cron")
+        if run_backend != "cron":
+            errors.append("spec.runBackend must be cron")
 
         schedule = spec.get("schedule")
         if not isinstance(schedule, dict):
             errors.append("spec.schedule is required")
         else:
-            if run_backend == "cron":
-                cron_expr = schedule.get("cron")
-                if not isinstance(cron_expr, str) or not cron_expr.strip():
-                    errors.append("spec.schedule.cron is required when runBackend=cron")
-                elif not _validate_cron_expr(cron_expr):
-                    errors.append("spec.schedule.cron is invalid")
-            elif run_backend == "tmux":
-                # tmux backend no longer acts as a scheduler loop.
-                # Keep task valid for compatibility; schedule fields are ignored.
-                pass
+            cron_expr = schedule.get("cron")
+            if not isinstance(cron_expr, str) or not cron_expr.strip():
+                errors.append("spec.schedule.cron is required when runBackend=cron")
+            elif not _validate_cron_expr(cron_expr):
+                errors.append("spec.schedule.cron is invalid")
 
             if schedule.get("misfirePolicy", "run_once") not in ("run_once", "skip"):
                 errors.append("spec.schedule.misfirePolicy must be run_once or skip")
@@ -343,7 +238,7 @@ def validate_task(task: dict) -> list[str]:
                 if provider not in ("claude", "codex", "gemini", "opencode", "pi"):
                     errors.append("spec.modeConfig.agent.provider must be one of claude|codex|gemini|opencode|pi")
                 if agent_cfg.get("commandTemplate"):
-                    errors.append("spec.modeConfig.agent.commandTemplate is deprecated; use cliCommand/cliArgs")
+                    errors.append("spec.modeConfig.agent.commandTemplate is not supported; use cliCommand/cliArgs")
 
             prompt = spec.get("input", {}).get("prompt", "")
             if isinstance(prompt, str):
@@ -443,7 +338,7 @@ def _build_cron_block(tasks: list[dict]) -> str:
         timezone = task["spec"]["schedule"].get("timezone", DEFAULT_TIMEZONE)
         cmd = (
             f"cd {shlex.quote(str(BASE_DIR))} && {shlex.quote(str(python_exec))} "
-            f"{shlex.quote(str(BASE_DIR / 'cron_manager.py'))} run-task {shlex.quote(task_id)} --trigger cron"
+            f"{shlex.quote(str(BASE_DIR / 'runtime' / 'cron_manager.py'))} run-task {shlex.quote(task_id)} --trigger cron"
         )
         lines.append(f"# cron-agent task={task_id}")
         lines.append(f"CRON_TZ={timezone}")
@@ -522,63 +417,13 @@ def get_cron_backend_status() -> dict:
     return {"installed": MARKER_BEGIN in current, "jobs": jobs, "count": len(jobs), "backend": "cron"}
 
 
-def _tmux_session_name(task_id: str) -> str:
-    safe = _slug(task_id).replace("-", "_")
-    return f"{TMUX_SESSION_PREFIX}{safe}"[:100]
-
-
-def _list_tmux_sessions() -> list[str]:
-    try:
-        result = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
-        if result.returncode != 0:
-            return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    except Exception:
-        return []
-
-
-def _kill_tmux_session(session_name: str) -> None:
-    try:
-        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True, text=True)
-    except Exception:
-        pass
-
-
-def sync_tmux_tasks() -> dict:
-    existing = _list_tmux_sessions()
-    managed_existing = [s for s in existing if s.startswith(TMUX_SESSION_PREFIX)]
-    for session in managed_existing:
-        _kill_tmux_session(session)
-    tasks = list_tasks(include_invalid=False)
-    desired_tasks = [t for t in tasks if _is_task_enabled(t) and _task_backend(t) == "tmux"]
-
-    return {
-        "success": True,
-        "backend": "tmux",
-        "task_count": len(desired_tasks),
-        "started": 0,
-        "cleaned_sessions": len(managed_existing),
-        "note": "tmux backend is run-once only; scheduler loop has been removed",
-        "errors": [],
-    }
-
-
-def get_tmux_backend_status() -> dict:
-    sessions = _list_tmux_sessions()
-    managed = [s for s in sessions if s.startswith(TMUX_SESSION_PREFIX)]
-    return {"backend": "tmux", "running": len(managed) > 0, "sessions": managed, "count": len(managed)}
-
-
-def sync_all_tasks() -> dict:
+def sync_scheduler() -> dict:
     cron_res = sync_cron_tasks()
-    tmux_res = sync_tmux_tasks()
-    return {"success": bool(cron_res.get("success")) and bool(tmux_res.get("success")), "cron": cron_res, "tmux": tmux_res}
+    return {"success": bool(cron_res.get("success")), "scheduler": cron_res}
 
 
-def get_backends_status() -> dict:
-    cron_status = get_cron_backend_status()
-    tmux_status = get_tmux_backend_status()
-    return {"cron": cron_status, "tmux": tmux_status}
+def get_scheduler_status() -> dict:
+    return get_cron_backend_status()
 
 
 def _safe_task_for_api(task: dict) -> dict:
@@ -892,7 +737,7 @@ def save_task(task: dict) -> dict:
     data_to_dump = {k: v for k, v in task.items() if not k.startswith("_")}
     _yaml_dump(path, data_to_dump)
 
-    sync_all_tasks()
+    sync_scheduler()
     return load_task_from_file(path)
 
 
@@ -901,7 +746,7 @@ def delete_task(task_id: str) -> dict:
     if not path.exists():
         return {"success": False, "error": f"task not found: {task_id}"}
     path.unlink()
-    sync_all_tasks()
+    sync_scheduler()
     return {"success": True}
 
 
@@ -1446,7 +1291,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     st.add_argument("task_id")
 
     sub.add_parser("sync")
-    sub.add_parser("backends-status")
+    sub.add_parser("scheduler-status")
     pl = sub.add_parser("process-list")
     pl.add_argument("--task-id", default=None)
     pl.add_argument("--run-id", default=None)
@@ -1500,10 +1345,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         print(json.dumps(get_task_status(args.task_id), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "sync":
-        print(json.dumps(sync_all_tasks(), ensure_ascii=False, indent=2))
+        print(json.dumps(sync_scheduler(), ensure_ascii=False, indent=2))
         return 0
-    if args.cmd == "backends-status":
-        print(json.dumps(get_backends_status(), ensure_ascii=False, indent=2))
+    if args.cmd == "scheduler-status":
+        print(json.dumps(get_scheduler_status(), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "process-list":
         print(json.dumps(api_process_list(task_id=args.task_id, run_id=args.run_id, status=args.status, limit=args.limit), ensure_ascii=False, indent=2))

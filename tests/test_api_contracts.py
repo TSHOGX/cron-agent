@@ -1,6 +1,6 @@
 import unittest
 
-from api import app
+from runtime.api import app
 
 
 class ApiContractsTest(unittest.TestCase):
@@ -50,6 +50,25 @@ class ApiContractsTest(unittest.TestCase):
         self.assertIn("status", body)
         self.assertIn("error", body)
         self.assertEqual(body.get("task_id"), "task-not-exist")
+
+    def test_scheduler_endpoints(self) -> None:
+        status = self.client.get("/api/scheduler/status")
+        self.assertEqual(status.status_code, 200)
+        body = status.get_json() or {}
+        self.assertIn("backend", body)
+        self.assertEqual(body.get("backend"), "cron")
+
+        sync = self.client.post("/api/scheduler/sync")
+        self.assertIn(sync.status_code, (200, 500))
+        sync_body = sync.get_json() or {}
+        self.assertIn("success", sync_body)
+        self.assertIn("scheduler", sync_body)
+
+    def test_removed_endpoints_are_404(self) -> None:
+        self.assertIn(self.client.post("/api/tasks/sync").status_code, (404, 405))
+        self.assertEqual(self.client.get("/api/backends/status").status_code, 404)
+        self.assertEqual(self.client.post("/api/backends/sync").status_code, 404)
+        self.assertEqual(self.client.get("/api/runs/some-run/events").status_code, 404)
 
 
 if __name__ == "__main__":

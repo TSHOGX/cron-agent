@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-import cron_manager
+from runtime import cron_manager
 
 
 class SingleInstanceModeTest(unittest.TestCase):
@@ -33,14 +33,44 @@ class SingleInstanceModeTest(unittest.TestCase):
         task["_valid"] = True
 
         mocked_state = {"tasks": {"t1": {"running": True, "started_at": cron_manager._now_iso()}}, "runs": {}}
-        with mock.patch("cron_manager._ensure_dirs"), mock.patch("cron_manager.get_task", return_value=task), mock.patch(
-            "cron_manager._load_state", return_value=mocked_state
-        ), mock.patch("cron_manager._mark_task_running", return_value=False):
+        with mock.patch("runtime.cron_manager._ensure_dirs"), mock.patch(
+            "runtime.cron_manager.get_task", return_value=task
+        ), mock.patch("runtime.cron_manager._load_state", return_value=mocked_state), mock.patch(
+            "runtime.cron_manager._mark_task_running", return_value=False
+        ):
             ctx, err = cron_manager._prepare_run_context("t1")
 
         self.assertIsNone(ctx)
         self.assertIsNotNone(err)
         self.assertEqual(err.get("error_code"), "task_running")
+
+    def test_validate_rejects_tmux_backend(self) -> None:
+        task = {
+            "apiVersion": "cron-agent",
+            "kind": "CronTask",
+            "metadata": {"id": "t1"},
+            "spec": {
+                "mode": "agent",
+                "runBackend": "tmux",
+                "schedule": {"cron": "* * * * *"},
+            },
+        }
+        errors = cron_manager.validate_task(task)
+        self.assertIn("spec.runBackend must be cron", errors)
+
+    def test_validate_rejects_old_api_version(self) -> None:
+        task = {
+            "apiVersion": "cron-agent/legacy",
+            "kind": "CronTask",
+            "metadata": {"id": "t1"},
+            "spec": {
+                "mode": "agent",
+                "runBackend": "cron",
+                "schedule": {"cron": "* * * * *"},
+            },
+        }
+        errors = cron_manager.validate_task(task)
+        self.assertIn("apiVersion must be cron-agent", errors)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import storage_paths
+from runtime import storage_paths
 
 try:
     from openai import OpenAI  # type: ignore
@@ -492,8 +492,8 @@ def _run_llm_session(session: ProcessSession, llm_cfg: dict[str, Any], prompt: s
         if not api_key:
             _finalize(session, "failed", error="Missing API key from spec.modeConfig.llm.authRef")
             return
-        model = llm_cfg.get("model", "kimi-k2.5")
-        client = OpenAI(api_key=api_key, base_url=llm_cfg.get("apiBase", "https://api.moonshot.cn/v1"))
+        model = llm_cfg.get("model", "gpt-4o-mini")
+        client = OpenAI(api_key=api_key, base_url=llm_cfg.get("apiBase", "https://api.openai.com/v1"))
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -573,8 +573,8 @@ def start_llm_process(
     timeout_seconds: int,
 ) -> dict[str, Any]:
     _mark_lost_running_processes_once()
-    provider = str(llm_cfg.get("provider", "kimi_openai_compat")).strip()
-    model = str(llm_cfg.get("model", "kimi-k2.5")).strip()
+    provider = str(llm_cfg.get("provider", "openai_compatible")).strip()
+    model = str(llm_cfg.get("model", "gpt-4o-mini")).strip()
     process_id = f"proc_{uuid.uuid4().hex[:12]}"
     session = ProcessSession(
         process_id=process_id,

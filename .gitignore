@@ -21,21 +21,3 @@ env/
 
 # Runtime generated data
 /.cron_agent_data/
-/.cron_agent_data/tasks/
-/.cron_agent_data/tasks/*.yaml
-messages/
-records/
-journal/
-
-# Logs
-*.log
-
-# Cron manager runtime artifacts
-logs/
-runtime/
-artifacts/
-generated/
-
-# Local task definitions (sunset repo-tracked YAML tasks)
-/tasks/
-/tasks/*.yaml
