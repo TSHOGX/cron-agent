@@ -2,15 +2,37 @@
 """Flask API server for cron agent."""
 
 import json
-from datetime import datetime
+import yaml
+from flask import Flask, jsonify, request as flask_request
+from werkzeug.wrappers import Request as WerkzeugRequest
 
-from flask import Flask, jsonify, request
-
-from runtime import cron_manager
-from runtime import recorder
-from runtime import storage_paths
+import cron_manager
 
 app = Flask(__name__)
+
+# Disable Flask's automatic JSON content-type checking
+app.config['JSON_AS_ASCII'] = False
+
+
+def _parse_request_payload():
+    """Parse request body as JSON or YAML. Auto-detects based on content."""
+    # Use get_data to bypass Flask's JSON content-type check
+    data = flask_request.get_data(as_text=True)
+
+    if not data:
+        return {}
+
+    # Try JSON first
+    try:
+        return json.loads(data)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Fallback to YAML
+    try:
+        return yaml.safe_load(data) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"Unable to parse request body as JSON or YAML: {e}")
 
 
 def _public_task(task: dict) -> dict:
@@ -19,131 +41,25 @@ def _public_task(task: dict) -> dict:
 
 
 def get_status() -> dict:
-    """Get service status."""
-    scheduler_status = cron_manager.get_scheduler_status()
+    """Get overall service status."""
+    tasks = cron_manager.api_list_tasks()
+    enabled = [t for t in tasks if t.get("metadata", {}).get("enabled", True)]
+    paused = [t for t in tasks if t.get("spec", {}).get("paused", False)]
     return {
         "cron_manager": {
-            "scheduler": scheduler_status,
+            "tasks": {
+                "total": len(tasks),
+                "enabled": len(enabled),
+                "paused": len(paused),
+            }
         }
     }
-
-
-def get_records(date: str | None = None, limit: int = 50) -> list[dict]:
-    """Get activity records."""
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-
-    records_dir = recorder.get_records_dir()
-    record_file = records_dir / f"{date}.jsonl"
-
-    records = []
-    if record_file.exists():
-        with open(record_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except Exception:
-                    continue
-
-    records = list(reversed(records))
-    return records[:limit]
-
-
-def get_all_record_dates() -> list[str]:
-    """Get all available record dates."""
-    records_dir = recorder.get_records_dir()
-    if not records_dir.exists():
-        return []
-
-    dates = [f.stem for f in records_dir.glob("*.jsonl")]
-    return sorted(dates, reverse=True)
-
-
-def get_journal_files(period: str = "daily") -> list[dict]:
-    """Get journal files for a specific period."""
-    journal_dir = recorder.get_journal_dir() / period
-    if not journal_dir.exists():
-        return []
-
-    files = []
-    output_root = storage_paths.get_output_root()
-    for f in journal_dir.glob("*.md"):
-        try:
-            display_path = str(f.relative_to(output_root))
-        except ValueError:
-            display_path = str(f)
-        files.append({"name": f.name, "date": f.stem, "path": display_path})
-
-    return sorted(files, key=lambda x: x["date"], reverse=True)
-
-
-def get_journal_content(period: str, filename: str) -> str | None:
-    """Get content of a specific journal file."""
-    journal_dir = recorder.get_journal_dir() / period
-    filepath = journal_dir / filename
-
-    if not filepath.exists():
-        return None
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        return f.read()
 
 
 @app.route("/api/status")
 def api_status():
     """Get overall service status from cron manager."""
     return jsonify(get_status())
-
-
-@app.route("/api/records")
-def api_records():
-    """Get activity records."""
-    date = request.args.get("date")
-    limit = int(request.args.get("limit", 50))
-    return jsonify(get_records(date, limit))
-
-
-@app.route("/api/records/dates")
-def api_record_dates():
-    """Get all available record dates."""
-    return jsonify(get_all_record_dates())
-
-
-@app.route("/api/journal/<period>")
-def api_journal_files(period):
-    """Get journal files for a specific period."""
-    if period not in ["daily", "weekly", "monthly", "period"]:
-        return jsonify({"error": "Invalid period"}), 400
-    return jsonify(get_journal_files(period))
-
-
-@app.route("/api/journal/<period>/<path:filename>")
-def api_journal_content(period, filename):
-    """Get content of a specific journal file."""
-    if period not in ["daily", "weekly", "monthly", "period"]:
-        return jsonify({"error": "Invalid period"}), 400
-    content = get_journal_content(period, filename)
-    if content is None:
-        return jsonify({"error": "File not found"}), 404
-    return jsonify({"content": content})
-
-
-@app.route("/api/logs")
-def api_logs():
-    """Get application logs."""
-    records = get_records(limit=100)
-    return jsonify(records)
-
-
-@app.route("/api/messages")
-def api_messages():
-    """Get message list."""
-    limit = int(request.args.get("limit", 100))
-    messages = recorder.read_messages(limit=limit)
-    return jsonify(messages)
 
 
 @app.route("/api/tasks", methods=["GET"])
@@ -166,9 +82,9 @@ def api_task_get(task_id):
 
 @app.route("/api/tasks", methods=["POST"])
 def api_task_create():
-    """Create a task from payload."""
+    """Create a task from payload (JSON or YAML)."""
     try:
-        payload = request.json or {}
+        payload = _parse_request_payload()
         task = cron_manager.task_from_api_payload(payload)
         saved = cron_manager.save_task(task)
         return jsonify({"success": True, "task": _public_task(saved)})
@@ -178,9 +94,9 @@ def api_task_create():
 
 @app.route("/api/tasks/<task_id>", methods=["PUT"])
 def api_task_update(task_id):
-    """Update task by id."""
+    """Update task by id (JSON or YAML)."""
     try:
-        payload = request.json or {}
+        payload = _parse_request_payload()
         task = cron_manager.task_from_api_payload(payload, task_id=task_id)
         saved = cron_manager.save_task(task)
         return jsonify({"success": True, "task": _public_task(saved)})
@@ -192,7 +108,12 @@ def api_task_update(task_id):
 def api_task_delete(task_id):
     """Delete task by id."""
     result = cron_manager.delete_task(task_id)
-    status = 200 if result.get("success") else 404
+    if result.get("success"):
+        status = 200
+    elif "not found" in str(result.get("error", "")).lower():
+        status = 404
+    else:
+        status = 500
     return jsonify(result), status
 
 
@@ -243,20 +164,6 @@ def api_task_status(task_id):
     """Get task runtime status."""
     result = cron_manager.get_task_status(task_id)
     status = 200 if result.get("found") else 404
-    return jsonify(result), status
-
-
-@app.route("/api/scheduler/status", methods=["GET"])
-def api_scheduler_status():
-    """Get scheduler status."""
-    return jsonify(cron_manager.get_scheduler_status())
-
-
-@app.route("/api/scheduler/sync", methods=["POST"])
-def api_scheduler_sync():
-    """Sync tasks to scheduler."""
-    result = cron_manager.sync_scheduler()
-    status = 200 if result.get("success") else 500
     return jsonify(result), status
 
 

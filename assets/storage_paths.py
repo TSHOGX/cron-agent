@@ -1,34 +1,46 @@
 #!/usr/bin/env python3
 """Shared runtime/output path helpers for cron agent."""
 
-from __future__ import annotations
-
+import os
 from pathlib import Path
 from typing import Literal
 
-DataKind = Literal["logs", "runtime", "artifacts", "records", "journal", "messages", "tasks"]
+DataKind = Literal["logs", "runtime", "artifacts", "tasks"]
 
-RUNTIME_DIR = Path(__file__).resolve().parent
-REPO_ROOT = RUNTIME_DIR.parent
-DATA_ROOT = REPO_ROOT / ".cron_agent_data"
+BASE_DIR = Path(__file__).parent
+
+# Support environment variable override for data directory
+_DATA_ROOT = None
+
+def _get_data_root() -> Path:
+    global _DATA_ROOT
+    if _DATA_ROOT is not None:
+        return _DATA_ROOT
+
+    # Priority: CRON_AGENT_DATA_DIR env var > default
+    env_override = os.environ.get("CRON_AGENT_DATA_DIR")
+    if env_override:
+        _DATA_ROOT = Path(env_override)
+    else:
+        _DATA_ROOT = BASE_DIR / ".cron_agent_data"
+    return _DATA_ROOT
+
+DATA_ROOT = _get_data_root()
 
 _KIND_DEFAULTS: dict[DataKind, str] = {
     "logs": "logs",
     "runtime": "runtime",
     "artifacts": "artifacts",
-    "records": "records",
-    "journal": "journal",
-    "messages": "messages",
     "tasks": "tasks",
 }
 
 
 def get_repo_root() -> Path:
-    return REPO_ROOT
+    return BASE_DIR
 
 
 def get_output_root() -> Path:
-    return DATA_ROOT
+    return _get_data_root()
 
 
 def get_data_dir(kind: DataKind) -> Path:

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Cron Manager: YAML task registry + dual-mode executors + raw trace logs."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -18,15 +16,15 @@ from pathlib import Path
 from typing import Any
 import shlex
 
-from runtime import process_manager
-from runtime import storage_paths
+import process_manager
+import storage_paths
 
 try:
     import yaml  # type: ignore
 except Exception:
     yaml = None
 
-BASE_DIR = storage_paths.get_repo_root()
+BASE_DIR = Path(__file__).parent
 TASKS_DIR = storage_paths.get_data_dir("tasks")
 MARKER_BEGIN = "# >>> CRON_AGENT_MANAGED BEGIN >>>"
 MARKER_END = "# <<< CRON_AGENT_MANAGED END <<<"
@@ -57,33 +55,17 @@ def _trace_index_path(date: datetime | None = None) -> Path:
 
 
 def _yaml_load(path: Path) -> dict:
-    if yaml is not None:
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-
-    ruby_cmd = [
-        "ruby",
-        "-ryaml",
-        "-rjson",
-        "-e",
-        "puts JSON.generate(YAML.load_file(ARGV[0]))",
-        str(path),
-    ]
-    result = subprocess.run(ruby_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"YAML parser unavailable. Install PyYAML. {result.stderr.strip()}")
-    return json.loads(result.stdout or "{}")
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to load task YAML files")
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def _yaml_dump(path: Path, data: dict) -> None:
-    if yaml is not None:
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-        return
-
-    # Fallback to JSON text with .yaml suffix when PyYAML is unavailable.
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to write task YAML files")
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
 
 def _load_json_file(path: Path, default: Any) -> Any:
@@ -124,7 +106,7 @@ def _validate_cron_expr(expr: str) -> bool:
 
 
 def _fill_defaults(task: dict) -> dict:
-    task.setdefault("apiVersion", "cron-agent")
+    task.setdefault("apiVersion", "cron-agent/v1")
     task.setdefault("kind", "CronTask")
     task.setdefault("metadata", {})
     task["metadata"].setdefault("enabled", True)
@@ -170,12 +152,12 @@ def _fill_defaults(task: dict) -> dict:
     trace_cfg.setdefault("maxEventBytes", 262144)
 
     llm_cfg = mode_cfg.setdefault("llm", {})
-    llm_cfg.setdefault("provider", "openai_compatible")
-    llm_cfg.setdefault("model", "gpt-4o-mini")
+    llm_cfg.setdefault("provider", "kimi_openai_compat")
+    llm_cfg.setdefault("model", "kimi-k2.5")
     llm_cfg.setdefault("temperature", 0.2)
     llm_cfg.setdefault("maxTokens", 4000)
-    llm_cfg.setdefault("apiBase", "https://api.openai.com/v1")
-    llm_cfg.setdefault("authRef", "env:OPENAI_API_KEY")
+    llm_cfg.setdefault("apiBase", "https://api.moonshot.cn/v1")
+    llm_cfg.setdefault("authRef", "env:KIMI_API_KEY")
 
     output_cfg = spec.setdefault("output", {})
     output_cfg.setdefault("sink", "file")
@@ -190,8 +172,8 @@ def validate_task(task: dict) -> list[str]:
     if not isinstance(task, dict):
         return ["Task must be a mapping."]
 
-    if task.get("apiVersion") not in (None, "cron-agent"):
-        errors.append("apiVersion must be cron-agent")
+    if task.get("apiVersion") not in (None, "cron-agent/v1"):
+        errors.append("apiVersion must be cron-agent/v1")
     if task.get("kind") not in (None, "CronTask"):
         errors.append("kind must be CronTask")
 
@@ -241,8 +223,6 @@ def validate_task(task: dict) -> list[str]:
                 sandbox_mode = agent_cfg.get("sandboxMode")
                 if sandbox_mode is not None and not isinstance(sandbox_mode, str):
                     errors.append("spec.modeConfig.agent.sandboxMode must be a string when provided")
-                if agent_cfg.get("commandTemplate"):
-                    errors.append("spec.modeConfig.agent.commandTemplate is not supported; use cliCommand/cliArgs")
 
             prompt = spec.get("input", {}).get("prompt", "")
             if isinstance(prompt, str):
@@ -325,24 +305,20 @@ def _is_task_enabled(task: dict) -> bool:
     return bool(metadata.get("enabled", True)) and not bool(spec.get("paused", False))
 
 
-def _task_backend(task: dict) -> str:
-    return task.get("spec", {}).get("runBackend", "cron")
-
-
 def _build_cron_block(tasks: list[dict]) -> str:
     python_path = BASE_DIR / ".venv" / "bin" / "python"
     python_exec = str(python_path) if python_path.exists() else sys.executable or "python3"
     lines: list[str] = [MARKER_BEGIN]
 
     for task in tasks:
-        if not task.get("_valid") or not _is_task_enabled(task) or _task_backend(task) != "cron":
+        if not task.get("_valid") or not _is_task_enabled(task):
             continue
         task_id = task["metadata"]["id"]
         cron_expr = task["spec"]["schedule"]["cron"]
         timezone = task["spec"]["schedule"].get("timezone", DEFAULT_TIMEZONE)
         cmd = (
             f"cd {shlex.quote(str(BASE_DIR))} && {shlex.quote(str(python_exec))} "
-            f"{shlex.quote(str(BASE_DIR / 'runtime' / 'cron_manager.py'))} run-task {shlex.quote(task_id)} --trigger cron"
+            f"{shlex.quote(str(BASE_DIR / 'cron_manager.py'))} run-task {shlex.quote(task_id)} --trigger cron"
         )
         lines.append(f"# cron-agent task={task_id}")
         lines.append(f"CRON_TZ={timezone}")
@@ -401,33 +377,14 @@ def sync_cron_tasks() -> dict:
 
     if result.returncode != 0:
         return {"success": False, "error": result.stderr.strip() or "failed to install crontab", "backend": "cron"}
-    count = len([t for t in tasks if _is_task_enabled(t) and _task_backend(t) == "cron"])
+    count = len([t for t in tasks if _is_task_enabled(t)])
     return {"success": True, "task_count": count, "backend": "cron"}
 
 
-def get_cron_backend_status() -> dict:
-    current = _read_current_crontab()
-    jobs: list[str] = []
-    in_block = False
-    for line in current.splitlines():
-        if line.strip() == MARKER_BEGIN:
-            in_block = True
-            continue
-        if line.strip() == MARKER_END:
-            in_block = False
-            continue
-        if in_block and line.strip() and not line.strip().startswith("#") and not line.startswith("CRON_TZ"):
-            jobs.append(line.strip())
-    return {"installed": MARKER_BEGIN in current, "jobs": jobs, "count": len(jobs), "backend": "cron"}
-
-
-def sync_scheduler() -> dict:
-    cron_res = sync_cron_tasks()
-    return {"success": bool(cron_res.get("success")), "scheduler": cron_res}
-
-
-def get_scheduler_status() -> dict:
-    return get_cron_backend_status()
+def _refresh_cron_backend() -> None:
+    res = sync_cron_tasks()
+    if not res.get("success"):
+        raise RuntimeError(str(res.get("error") or "failed to sync crontab"))
 
 
 def _safe_task_for_api(task: dict) -> dict:
@@ -741,7 +698,7 @@ def save_task(task: dict) -> dict:
     data_to_dump = {k: v for k, v in task.items() if not k.startswith("_")}
     _yaml_dump(path, data_to_dump)
 
-    sync_scheduler()
+    _refresh_cron_backend()
     return load_task_from_file(path)
 
 
@@ -750,8 +707,11 @@ def delete_task(task_id: str) -> dict:
     if not path.exists():
         return {"success": False, "error": f"task not found: {task_id}"}
     path.unlink()
-    sync_scheduler()
-    return {"success": True}
+    try:
+        _refresh_cron_backend()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": f"task deleted but failed to sync crontab: {e}", "task_deleted": True}
 
 
 def pause_task(task_id: str) -> dict:
@@ -759,8 +719,11 @@ def pause_task(task_id: str) -> dict:
     if not task or not task.get("_valid"):
         return {"success": False, "error": f"task not found or invalid: {task_id}"}
     task["spec"]["paused"] = True
-    save_task(task)
-    return {"success": True}
+    try:
+        save_task(task)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def resume_task(task_id: str) -> dict:
@@ -768,8 +731,11 @@ def resume_task(task_id: str) -> dict:
     if not task or not task.get("_valid"):
         return {"success": False, "error": f"task not found or invalid: {task_id}"}
     task["spec"]["paused"] = False
-    save_task(task)
-    return {"success": True}
+    try:
+        save_task(task)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def _prepare_run_context(task_id: str, run_id: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -1175,8 +1141,11 @@ def update_task_settings(task_id: str, payload: dict) -> dict:
         else:
             spec[key] = value
 
-    saved = save_task(task_copy)
-    return {"success": True, "task": _safe_task_for_api(saved), "settings": get_task_settings(task_id)}
+    try:
+        saved = save_task(task_copy)
+        return {"success": True, "task": _safe_task_for_api(saved), "settings": get_task_settings(task_id)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def api_process_start(payload: dict) -> dict:
@@ -1294,8 +1263,6 @@ def cli_main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status")
     st.add_argument("task_id")
 
-    sub.add_parser("sync")
-    sub.add_parser("scheduler-status")
     pl = sub.add_parser("process-list")
     pl.add_argument("--task-id", default=None)
     pl.add_argument("--run-id", default=None)
@@ -1347,12 +1314,6 @@ def cli_main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "status":
         print(json.dumps(get_task_status(args.task_id), ensure_ascii=False, indent=2))
-        return 0
-    if args.cmd == "sync":
-        print(json.dumps(sync_scheduler(), ensure_ascii=False, indent=2))
-        return 0
-    if args.cmd == "scheduler-status":
-        print(json.dumps(get_scheduler_status(), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "process-list":
         print(json.dumps(api_process_list(task_id=args.task_id, run_id=args.run_id, status=args.status, limit=args.limit), ensure_ascii=False, indent=2))
