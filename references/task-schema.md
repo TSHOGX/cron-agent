@@ -18,6 +18,8 @@
 ## Agent mode
 
 - `spec.modeConfig.agent.provider` in `claude|codex|gemini|opencode|pi`
+- `spec.modeConfig.agent.sandboxMode` defaults to `danger-full-access`
+- Legacy `workspace-write` remains supported for restricted-write agent runs
 - `spec.modeConfig.agent.commandTemplate` is not supported
 
 ## LLM mode

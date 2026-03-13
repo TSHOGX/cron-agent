@@ -128,7 +128,7 @@ spec:
     agent:
       provider: codex
       model: gpt-5-codex
-      sandboxMode: workspace-write
+      sandboxMode: danger-full-access
       trace:
         enabled: true
         maxEventBytes: 262144
@@ -142,3 +142,4 @@ spec:
 
 - `.cron_agent_data/` 与 `.cron_agent_data/tasks/*.yaml` 已忽略，不会进入 Git。
 - 若使用明文密钥，请仅写入本地任务 YAML，不要提交到仓库。
+- `sandboxMode` 默认是 `danger-full-access`，会保持当前自动执行行为；旧任务若仍写 `workspace-write`，运行时会按受限写权限模式兼容处理。

@@ -158,7 +158,8 @@ def _fill_defaults(task: dict) -> dict:
     agent_cfg = mode_cfg.setdefault("agent", {})
     agent_cfg.setdefault("provider", "codex")
     agent_cfg.setdefault("model", "gpt-5-codex")
-    agent_cfg.setdefault("sandboxMode", "workspace-write")
+    # Default to autonomous execution while keeping legacy workspace-write tasks valid.
+    agent_cfg.setdefault("sandboxMode", "danger-full-access")
     agent_cfg.setdefault("systemPrompt", "")
     fallback_cfg = agent_cfg.setdefault("fallback", {})
     fallback_cfg.setdefault("enabled", False)
@@ -237,6 +238,9 @@ def validate_task(task: dict) -> list[str]:
                 provider = agent_cfg.get("provider", "codex")
                 if provider not in ("claude", "codex", "gemini", "opencode", "pi"):
                     errors.append("spec.modeConfig.agent.provider must be one of claude|codex|gemini|opencode|pi")
+                sandbox_mode = agent_cfg.get("sandboxMode")
+                if sandbox_mode is not None and not isinstance(sandbox_mode, str):
+                    errors.append("spec.modeConfig.agent.sandboxMode must be a string when provided")
                 if agent_cfg.get("commandTemplate"):
                     errors.append("spec.modeConfig.agent.commandTemplate is not supported; use cliCommand/cliArgs")
 

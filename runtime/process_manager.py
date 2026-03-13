@@ -164,10 +164,25 @@ def _get_secret_from_auth_ref(auth_ref: str | None) -> str | None:
     return auth_ref
 
 
+def _normalize_sandbox_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    return mode or "danger-full-access"
+
+
+def _is_danger_mode(mode: str) -> bool:
+    return mode in {"danger-full-access", "dangerously-skip-permissions", "yolo"}
+
+
+def _claude_permission_mode_for_sandbox(mode: str) -> str:
+    if mode in {"workspace-write", "write", "accept-edits", "acceptedits"}:
+        return "acceptEdits"
+    return "default"
+
+
 def _build_agent_cmd(cfg: dict[str, Any], final_prompt: str) -> list[str]:
     provider = str(cfg.get("provider", "codex")).strip().lower()
     model = str(cfg.get("model", "")).strip()
-    sandbox_mode = str(cfg.get("sandboxMode", "workspace-write")).strip() or "workspace-write"
+    sandbox_mode = _normalize_sandbox_mode(cfg.get("sandboxMode"))
     cli_args = cfg.get("cliArgs", []) or []
 
     explicit = cfg.get("cliCommand")
@@ -179,7 +194,10 @@ def _build_agent_cmd(cfg: dict[str, Any], final_prompt: str) -> list[str]:
         return base
 
     if provider == "codex":
-        cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", sandbox_mode]
+        if _is_danger_mode(sandbox_mode):
+            cmd = ["codex", "exec", "--yolo"]
+        else:
+            cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", sandbox_mode]
         if model:
             cmd.extend(["--model", model])
         if isinstance(cli_args, list):
@@ -188,7 +206,11 @@ def _build_agent_cmd(cfg: dict[str, Any], final_prompt: str) -> list[str]:
         return cmd
 
     if provider == "claude":
-        cmd = ["claude", "-p", "--output-format", "text", "--permission-mode", "acceptEdits"]
+        cmd = ["claude", "-p"]
+        if _is_danger_mode(sandbox_mode):
+            cmd.append("--dangerously-skip-permissions")
+        else:
+            cmd.extend(["--permission-mode", _claude_permission_mode_for_sandbox(sandbox_mode)])
         if model:
             cmd.extend(["--model", model])
         if isinstance(cli_args, list):
@@ -197,7 +219,9 @@ def _build_agent_cmd(cfg: dict[str, Any], final_prompt: str) -> list[str]:
         return cmd
 
     if provider == "gemini":
-        cmd = ["gemini", "--approval-mode", "yolo"]
+        cmd = ["gemini"]
+        if _is_danger_mode(sandbox_mode):
+            cmd.extend(["--approval-mode", "yolo"])
         if model:
             cmd.extend(["--model", model])
         if isinstance(cli_args, list):
